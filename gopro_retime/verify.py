@@ -89,8 +89,15 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
     st = [b.type.decode() for b in src.top.boxes]
     ot = [b.type.decode() for b in out.top.boxes]
     rep.add("top-level box order", "PASS" if st == ot else "FAIL", f"{st} vs {ot}")
-    # moov tree
-    ss, os_ = _box_signature(src.moov), _box_signature(out.moov)
+    # moov tree (a track dropped on purpose is excluded from the source side of the comparison)
+    out_keys = {t.key for t in out.tracks}
+    src_moov = mb.clone(src.moov)
+    for t in src.tracks:
+        if t.key not in out_keys:
+            for trak in src_moov.children_of_type("trak"):
+                if mb.parse_tkhd(trak.child("tkhd")).track_id == t.track_id:
+                    src_moov.remove_child(trak)
+    ss, os_ = _box_signature(src_moov), _box_signature(out.moov)
     if ss == os_:
         rep.add("moov box tree identical (order and nesting)", "PASS", f"{len(ss)} boxes")
     else:
@@ -98,7 +105,7 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
         diff = "\n".join(difflib.unified_diff(ss, os_, lineterm="", n=1))
         rep.add("moov box tree identical (order and nesting)", "FAIL", diff[:2000])
     # leaf payloads
-    sm, om = _leaf_map(src.moov), _leaf_map(out.moov)
+    sm, om = _leaf_map(src_moov), _leaf_map(out.moov)
     changed = []
     for k, v in sm.items():
         if k not in om:
