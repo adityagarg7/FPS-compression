@@ -139,7 +139,8 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
             continue
         full = [st.counts[i] for i in full_idx] if full_idx else st.counts[:1]
         median = sorted(full)[len(full) // 2] if full else st.counts[0]
-        aligned = _stmp_frame_aligned(st, step, frames_per_payload)
+        # frame-locked classes need per-payload timestamps (HERO8+); older firmware bins irregularly -> keep exact windows
+        aligned = st.has_stmp and _stmp_frame_aligned(st, step, frames_per_payload)
         st.stmp_per_frame = step
         if aligned and abs(total - covered) <= 2 and abs(median - frames_per_payload) <= 1:
             st.cls, st.stride = "per_frame", 1
@@ -320,6 +321,9 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
     def lag_out(st: Stream) -> int:
         return round(Fraction(st.lag_src_frames) / fps_s * fps_o)
 
+    # frames spanned by the output metadata track (the track may end before the video does, like the source's)
+    covered_out = min(n_out, round(sum(durs) * fps_o / 1000))
+
     # --- per-stream output sample lists: list of per-payload lists of Sample ---
     per_stream_out: dict[int, list[list[Sample]]] = {}
     per_stream_stmp: dict[int, list[Optional[int]]] = {}
@@ -330,7 +334,7 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
             T = len(st.samples)
             k = st.stride
             lag = lag_out(st)
-            n_target = n_out // k if k > 1 else n_out
+            n_target = covered_out // k if k > 1 else covered_out
             n_target += st.extra_tail if st.extra_tail > 0 else 0
             if st.extra_tail < 0:
                 n_target = max(0, n_target + st.extra_tail)
