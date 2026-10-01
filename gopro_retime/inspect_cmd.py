@@ -76,7 +76,9 @@ def inspect(path: str, out=sys.stdout) -> None:
             w(f"  device {d} {name!r}:")
             for st in streams:
                 cnts = st.counts[:4]
-                w(f"    {(st.key or b'----').decode('latin1'):4} {st.cls:9} stride {st.stride} lag {st.lag_src_frames} tail {st.extra_tail:+d} grouped={st.grouped} stmp={st.has_stmp} counts {cnts}... total {sum(st.counts)}  {st.name.rstrip(b'\x00')[:40]!r}")
+                key = (st.key or b"----").decode("latin1")
+                sname = st.name.rstrip(b"\x00")[:40]
+                w(f"    {key:4} {st.cls:9} stride {st.stride} lag {st.lag_src_frames} tail {st.extra_tail:+d} grouped={st.grouped} stmp={st.has_stmp} counts {cnts}... total {sum(st.counts)}  {sname!r}")
     u = src.moov.find("udta")
     if u is not None:
         w(f"udta: {[c.type.decode('latin1') + '(' + str(c.serialized_size()) + ')' for c in u.children]}")
@@ -85,8 +87,9 @@ def inspect(path: str, out=sys.stdout) -> None:
             klvs, _tr = gpmf.parse_with_trailing(g.data)
             for d in klvs:
                 nm = d.child("DVNM")
+                dname = nm.data.rstrip(b"\x00") if nm else b""
                 keys = [c.key.decode("latin1") for c in d.children or []]
-                w(f"  GPMF DEVC {nm.data.rstrip(b'\x00') if nm else b''!r}: {keys}")
+                w(f"  GPMF DEVC {dname!r}: {keys}")
 
 
 def main(argv=None) -> int:
