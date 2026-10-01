@@ -431,11 +431,49 @@ def compare_exiftool(src_path: str, out_path: str, rep: Report, ignore: Optional
             "; ".join(f"{k}: {v[0]!r}->{v[1]!r}" for k, v in sorted(diffs.items()))[:3000])
 
 
+FINGERPRINTS = (b"x264", b"x265", b"Lavc", b"Lavf", b"libx", b"ffmpeg", b"HandBrake", b"videolan", b"Multicoreware",
+                b"MultiCoreWare", b"isom", b"iso2", b"mp42", b"Premiere", b"Quik")
+
+
+def check_fingerprints(out_path: str, rep: Report) -> None:
+    """Whole-file sweep (mdat + moov) for encoder/muxer strings a camera never writes."""
+    hits: dict[bytes, int] = {}
+    with open(out_path, "rb") as f:
+        prev = b""
+        while True:
+            chunk = f.read(1 << 22)
+            if not chunk:
+                break
+            buf = prev + chunk
+            for fp in FINGERPRINTS:
+                n = buf.count(fp)
+                if n:
+                    hits[fp] = hits.get(fp, 0) + n
+            prev = chunk[-32:]
+    rep.add("no encoder/muxer fingerprint strings anywhere in the file", "PASS" if not hits else "FAIL",
+            ", ".join(f"{k.decode()} x{v}" for k, v in hits.items()))
+
+
+def check_av_duration_relation(out: SourceFile, rep: Report) -> None:
+    v, a = out.track("video"), out.track("audio")
+    if v is None or a is None:
+        return
+    ts = 90000
+    dv = v.media_duration * ts // v.timescale
+    da = a.media_duration * ts // a.timescale
+    delta = da - dv
+    limit = out.video_frame_duration() * ts // v.timescale + 1024 * ts // a.timescale
+    rep.add("audio ends within one frame + one AAC frame of the video (camera behaviour)", "PASS" if abs(delta) <= limit else "WARN",
+            f"audio - video = {delta / ts * 1000:.1f} ms")
+
+
 def full_report(src_path: str, out_path: str, codec: str, reference_path: Optional[str] = None,
                 external_tools: bool = True, imu_dropped: bool = False, gps_dropped: bool = False) -> Report:
     rep = Report()
     src, out = SourceFile.open(src_path), SourceFile.open(out_path)
     compare_container(src, out, rep)
+    check_av_duration_relation(out, rep)
+    check_fingerprints(out_path, rep)
     compare_video_streams(src, out, codec, rep)
     compare_parameter_sets(src_path, out_path, rep)
     if external_tools:

@@ -276,6 +276,7 @@ def run(opts: Options, log: Log = print) -> Result:
         if gp is not None and opts.gpmf == "drop":
             _drop_track(src, "gpmd")
         res = mux.write_output(src, opts.out, tracks, order, fdsc_builder=fdsc_builder, mvhd_timescale=out_ts, log=log)
+        _touch_like_camera(opts.out, src, tracks["video"].total_duration, out_ts)
 
         # ---- 10. verification -------------------------------------------------------------------
         report_text = ""
@@ -307,6 +308,17 @@ def _measure_slice_conventions(codec: str, samples: list[bytes], ps: dict[str, l
     sps_f = hevc.parse_sps_nal(ps["sps"][0])
     pps_f = hevc.parse_pps_nal(ps["pps"][0], sps_f)
     return hevc_rewrite.measure_hevc_conventions(samples, sps_f, pps_f)
+
+
+def _touch_like_camera(path: str, src: SourceFile, video_duration: int, video_ts: int) -> None:
+    """The camera closes the file at the end of the recording: mtime = creation time (RTC, stored as if UTC) + duration."""
+    try:
+        unix = src.mvhd.creation_time - 2082844800
+        if unix > 0:
+            end = unix + video_duration / video_ts
+            os.utime(path, (end, end))
+    except OSError:
+        pass
 
 
 def _collect_param_sets(aus: list[N.AccessUnit], codec: str) -> dict[str, list[bytes]]:

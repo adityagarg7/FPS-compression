@@ -79,6 +79,10 @@ Signal level, which no re-encoder can hide:
   track every native file has.
 * **Unknowns without a reference**: SETT bits, SROT and similar mode-dependent values are copied from the 50 fps
   source; if the camera writes different values at 30 fps, only `--reference` can supply them.
+* **Identity atoms**: MUID/GUMI (media unique ids) and the HiLight tags are kept from the source, so the output is
+  linked to the original if both files are ever compared. The output's modification time is set to the recording's
+  end like the camera does.
+* **Sidecars**: a camera writes `GL01xxxx.LRV` and `GX01xxxx.THM` next to every MP4; the tool does not create them.
 
 ## Development
 
