@@ -45,6 +45,9 @@ gopro-retime src.MP4 out.MP4 --preset slower --two-pass   # slower, better rate 
 gopro-retime src.MP4 out.MP4 -x rc-lookahead=40           # extra x264/x265 parameters (calibration re-checks them)
 ```
 
+`gopro-retime-inspect FILE.MP4` prints everything the converter learns from a recording (codec and parameter sets,
+GOP, writer conventions, SOS layout, telemetry stream classes, udta settings) — run it on a real HERO12 file first.
+
 Options: `--fps` (29.97 default, 30, 25, 24000/1001, …), `--imu drop|keep`, `--gps keep|drop`, `--gpmf rebuild|drop`,
 `--reference FILE`, `--bitrate/--maxrate/--bufsize`, `--gop`, `--preset`, `--two-pass`, `--no-verify`,
 `--no-external-tools`, `--no-transplant`, `--keep-temp`, `--workdir`, `--threads`, `-x KEY=VALUE`.

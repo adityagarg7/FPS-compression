@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 gopro-retime = "gopro_retime.cli:main"
+gopro-retime-inspect = "gopro_retime.inspect_cmd:main"
 
 [tool.setuptools.packages.find]
 include = ["gopro_retime*"]
