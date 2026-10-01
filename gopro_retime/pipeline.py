@@ -176,6 +176,8 @@ def run(opts: Options, log: Log = print) -> Result:
             k, _, v = kv.partition("=")
             (settings.x264_params if codec == "h264" else settings.x265_params)[k] = v
         notes.extend(settings.notes)
+        if settings.bitrate != bitrate:
+            notes.append(f"encode target {settings.bitrate} bps (requested {bitrate} bps capped at 97% of the declared HRD max rate {settings.maxrate} bps so the measured average stays under it)")
         if not opts.no_transplant:
             from .h26x import calibrate
             cal = calibrate.calibrate(settings, ps_src, log=log)

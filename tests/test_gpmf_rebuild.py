@@ -107,3 +107,22 @@ def test_hero11_pal_track_classification():
         assert cls[k] == "per_frame", (k, cls[k])
     for k in (b"WNDM", b"MWET", b"AALP", b"ACCL", b"GYRO", b"GPS9"):
         assert cls[k] == "timed", (k, cls[k])
+
+
+def test_missing_first_stmp_is_back_projected(fake50):
+    """A per-frame stream whose first payload carries no STMP must get T0 from the next payload, not 0."""
+    from fractions import Fraction
+    s = SourceFile.open(fake50)
+    gp = s.track("gpmd")
+    payloads = [gpmf.parse(b) for b in s.read_samples(gp)]
+    # strip the STMP item from every STRM of payload 0
+    for strm in payloads[0][0].children_of("STRM"):
+        strm.children = [c for c in strm.children if c.key != b"STMP"]
+    n = s.video.sample_count
+    fpp, period_ms = P.frames_per_gpmf_payload(s.video_frame_rate())
+    streams = gpmf_rebuild.analyze(payloads, n, fpp, period_ms * 1000, s.video_frame_rate(), 0, covered_frames=n)
+    shut = next(st for st in streams if st.key == b"SHUT")
+    assert shut.cls == "per_frame" and shut.stmps[0] is None and shut.has_stmp
+    assert shut.t0 is not None and shut.t0 == shut.stmps[1] - int(shut.counts[0] * shut.stmp_per_frame)
+    # and the gap filler never emits 0 or None inside a timestamped run
+    assert gpmf_rebuild._fill_stmp_gaps([None, None, 3000, None, 5000], Fraction(1000)) == [1000, 2000, 3000, 4000, 5000]

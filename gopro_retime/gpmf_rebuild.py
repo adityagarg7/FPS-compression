@@ -6,7 +6,8 @@ Every stream is classified by MEASUREMENT on the source (nothing is hard-coded p
   timed     : fixed-rate / aperiodic (IMU, audio, GPS, scene) -> re-binned by reconstructed timestamps into the new windows
   grouped   : several items with the data key per STRM (FACE/SCEN/HUES/DISP) -> each item is one sample of its class
 Sticky items (STNM/SIUN/SCAL/TYPE/MTRX/.../TMPC/GPSU/VPTS...) are copied from the overlapping source payload; STMP/TSMP are
-recomputed; delivery lag and stream phase are measured on the source and converted to the output frame rate.
+recomputed; time-based streams are re-binned by each sample's position inside its source window (window-relative
+times), and the metadata delivery lag is measured on the source and converted to the output frame rate.
 """
 from __future__ import annotations
 
@@ -162,9 +163,29 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
             # +1/-1 policies are measured against the frames the metadata covers (the output covers its own span)
             st.extra_tail = total - (covered // st.stride if st.stride > 1 else covered)
             st.t0 = st.stmps[0]
+            if st.t0 is None and st.has_stmp:
+                # stream absent from payload 0 (or its first STRM carries no STMP): back-project the first timestamp
+                p0 = next((i for i, v in enumerate(st.stmps) if v is not None), None)
+                if p0 is not None:
+                    st.t0 = st.stmps[p0] - int(sum(st.counts[:p0]) * st.stride * step)
         else:
             _reconstruct_times(st, period_us)
     return streams
+
+
+def _fill_stmp_gaps(stmps: list[Optional[int]], step_per_payload: Fraction) -> list[Optional[int]]:
+    """A payload without a derivable STMP continues the clock from its neighbours (never 0: a zero in the middle of a
+    timestamped stream is a tell and breaks every reader's time base)."""
+    if all(v is None for v in stmps):
+        return stmps
+    out = list(stmps)
+    first = next(i for i, v in enumerate(out) if v is not None)
+    for i in range(first - 1, -1, -1):
+        out[i] = out[i + 1] - int(step_per_payload)
+    for i in range(first + 1, len(out)):
+        if out[i] is None:
+            out[i] = out[i - 1] + int(step_per_payload)
+    return out
 
 
 def _window_relative_times(st: Stream, src_durs_ms: list[int]) -> list[Fraction]:
@@ -342,6 +363,7 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
                 for j in range(n_pay):
                     ff = first_frame[j]
                     stmps[j] = st.t0 + int(ff * step_o) if ff is not None else st.t0 + int(j * units_per_ms * period_o_ms)
+                stmps = _fill_stmp_gaps(stmps, units_per_ms * period_o_ms)
         elif st.cls == "timed":
             taus = _window_relative_times(st, src_durs)
             bounds = []
@@ -358,11 +380,7 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
                 for j in range(n_pay):
                     if buckets[j] and buckets[j][0].t is not None:
                         stmps[j] = int(round(buckets[j][0].t))
-                    elif buckets[j]:
-                        stmps[j] = None
-                    else:
-                        prev = next((stmps[q] for q in range(j - 1, -1, -1) if stmps[q] is not None), 0)
-                        stmps[j] = prev + period_o_us
+                stmps = _fill_stmp_gaps(stmps, Fraction(period_o_us))
         per_stream_out[st.index] = buckets
         per_stream_stmp[st.index] = stmps
 
