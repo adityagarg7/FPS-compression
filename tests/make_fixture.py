@@ -64,4 +64,4 @@ def make_50fps_fixture(src_path: str, out_path: str, fps: int = 50) -> str:
 
 
 if __name__ == "__main__":
-    print(make_50fps_fixture(sys.argv[1], sys.argv[2]))
+    print(make_50fps_fixture(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 50))

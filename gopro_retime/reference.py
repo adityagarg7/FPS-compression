@@ -15,15 +15,24 @@ from .model import SourceFile
 PER_FILE_UDTA = {b"\xa9xyz", b"free", b"MUID", b"HMMT", b"GUMI"}
 
 
-def check_compatible(src: SourceFile, ref: SourceFile) -> list[str]:
+class IncompatibleReference(ValueError):
+    pass
+
+
+def check_compatible(src: SourceFile, ref: SourceFile, out_fps=None) -> list[str]:
+    """Returns warnings; raises IncompatibleReference for conditions that make the template unusable."""
     problems = []
+    sv, rv = src.video, ref.video
+    if sv.format != rv.format:
+        raise IncompatibleReference(f"reference video codec {rv.format!r} differs from the source's {sv.format!r}")
+    if out_fps is not None and ref.video_frame_rate() != out_fps:
+        raise IncompatibleReference(f"reference is {ref.video_frame_rate()} fps but the output is {out_fps} fps; the reference must be a native recording at the target rate")
+    if ref.track("fdsc") is None or ref.track("gpmd") is None or ref.track("tmcd") is None:
+        raise IncompatibleReference("reference is not a complete GoPro recording (missing SOS/MET/timecode tracks)")
     for key in (b"FIRM", b"LENS", b"CAME"):
         a, b = src.moov.find(f"udta/{key.decode('latin1')}"), ref.moov.find(f"udta/{key.decode('latin1')}")
         if a is not None and b is not None and a.data != b.data:
             problems.append(f"udta {key.decode()} differs between source and reference (different camera/firmware?)")
-    sv, rv = src.video, ref.video
-    if sv.format != rv.format:
-        problems.append(f"video codec differs: {sv.format!r} vs {rv.format!r}")
     a, b = mb.video_entry_info(sv.stsd_entries[0]), mb.video_entry_info(rv.stsd_entries[0])
     if (a.width, a.height) != (b.width, b.height):
         problems.append(f"resolution differs: {a.width}x{a.height} vs {b.width}x{b.height}")
@@ -45,12 +54,12 @@ def merged_udta(src: SourceFile, ref: SourceFile, log=None) -> mb.Box:
     for c in out.children:
         i = seen.get(c.type, 0)
         seen[c.type] = i + 1
-        if c.type in PER_FILE_UDTA and c.type in src_by_type and i < len(src_by_type[c.type]):
-            # the 30-byte first atom is '©xyz' or 'free' depending on the GPS fix of THIS recording
-            if c.type in (b"\xa9xyz", b"free") and i == 0 and su.children and su.children[0].type in (b"\xa9xyz", b"free") and c is out.children[0]:
-                new_children.append(mb.clone(su.children[0]))
-            else:
-                new_children.append(mb.clone(src_by_type[c.type][i]))
+        if c is out.children[0] and c.type in (b"\xa9xyz", b"free") and su.children and su.children[0].type in (b"\xa9xyz", b"free") \
+                and su.children[0].serialized_size() == c.serialized_size():
+            # the 30-byte first slot is '©xyz' or 'free' depending on the GPS fix of THIS recording, never the reference's
+            new_children.append(mb.clone(su.children[0]))
+        elif c.type in PER_FILE_UDTA and c.type in src_by_type and i < len(src_by_type[c.type]):
+            new_children.append(mb.clone(src_by_type[c.type][i]))
         elif c.type == b"GPMF":
             new_children.append(_merged_global_settings(src_by_type.get(b"GPMF", [None])[0], c, log))
         else:
@@ -106,9 +115,9 @@ def merged_sos_header(src_header: bytes, ref_header: bytes, src_ts: int, ref_ts:
     return bytes(h)
 
 
-def apply(src: SourceFile, ref: SourceFile, log=None) -> None:
+def apply(src: SourceFile, ref: SourceFile, log=None, out_fps=None) -> None:
     """Mutate src.moov so the muxer's template carries the reference's mode-dependent udta."""
-    probs = check_compatible(src, ref)
+    probs = check_compatible(src, ref, out_fps)
     for p in probs:
         if log:
             log(f"reference warning: {p}")

@@ -383,7 +383,8 @@ def slice_header(io: BitIO, f: dict, nal_unit_type: int, nal_ref_idc: int, sps_f
     if pps_f["num_slice_groups_minus1"] > 0 and pps_f.get("slice_group_map_type", 0) in (3, 4, 5):
         pic_size = (sps_f["pic_width_in_mbs_minus1"] + 1) * (sps_f["pic_height_in_map_units_minus1"] + 1)
         rate = pps_f["slice_group_change_rate_minus1"] + 1
-        bits = (pic_size // rate + 1).bit_length()
+        from .bits import ceil_log2
+        bits = ceil_log2(-(-pic_size // rate) + 1)
         io.u(bits, f, "slice_group_change_cycle")
 
 
@@ -472,4 +473,6 @@ def write_slice_nal(f: dict, data: bytes, hdr_bits_in_data: int, sps_f: dict, pp
         nb = nbits_hdr + total_bits
         combined <<= (8 - nb % 8) % 8
         body = combined.to_bytes((nb + 7) // 8, "big")
+        # the rbsp_stop_one_bit is the last 1 bit: whole zero bytes created by the shift must go (7.4.1: last byte != 0)
+        body = body.rstrip(b"\x00") or body
     return N.insert_epb(hdr + body)

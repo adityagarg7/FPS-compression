@@ -245,15 +245,14 @@ def transplant_hevc(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
             if qp_shift:
                 g["slice_qp_delta"] = f["slice_qp_delta"] + qp_shift
                 changed.add("slice_qp_delta (init_qp)")
-            e_cb = ep["pps_cb_qp_offset"] + f.get("slice_cb_qp_offset", 0)
-            e_cr = ep["pps_cr_qp_offset"] + f.get("slice_cr_qp_offset", 0)
+            # the chroma deblocking QP uses pps_cb/cr_qp_offset only (8.7.2.5.5): moving an offset into the slice is NOT lossless
+            if (ep["pps_cb_qp_offset"], ep["pps_cr_qp_offset"]) != (tp["pps_cb_qp_offset"], tp["pps_cr_qp_offset"]):
+                raise RewriteUnsafe(f"PPS chroma QP offsets differ ({ep['pps_cb_qp_offset']}/{ep['pps_cr_qp_offset']} vs {tp['pps_cb_qp_offset']}/{tp['pps_cr_qp_offset']}) (decode-affecting)")
             if tp["pps_slice_chroma_qp_offsets_present_flag"]:
-                g["slice_cb_qp_offset"] = e_cb - tp["pps_cb_qp_offset"]
-                g["slice_cr_qp_offset"] = e_cr - tp["pps_cr_qp_offset"]
-                if (g["slice_cb_qp_offset"], g["slice_cr_qp_offset"]) != (f.get("slice_cb_qp_offset", 0), f.get("slice_cr_qp_offset", 0)):
-                    changed.add("slice chroma qp offsets")
-            elif (e_cb, e_cr) != (tp["pps_cb_qp_offset"], tp["pps_cr_qp_offset"]):
-                raise RewriteUnsafe(f"chroma QP offsets {e_cb}/{e_cr} cannot be expressed under the target PPS ({tp['pps_cb_qp_offset']}/{tp['pps_cr_qp_offset']})")
+                g["slice_cb_qp_offset"] = f.get("slice_cb_qp_offset", 0)
+                g["slice_cr_qp_offset"] = f.get("slice_cr_qp_offset", 0)
+            elif f.get("slice_cb_qp_offset", 0) or f.get("slice_cr_qp_offset", 0):
+                raise RewriteUnsafe("encoder slices carry chroma QP offsets but the target PPS has none")
             # deblocking
             e_dis = f.get("slice_deblocking_filter_disabled_flag", ep.get("pps_deblocking_filter_disabled_flag", 0))
             e_beta = f.get("slice_beta_offset_div2", ep.get("pps_beta_offset_div2", 0)) if not e_dis else 0

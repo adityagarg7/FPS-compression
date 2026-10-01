@@ -38,9 +38,19 @@ def main(argv=None) -> int:
                    verify=not a.no_verify, external_tools=not a.no_external_tools, keep_temp=a.keep_temp, workdir=a.workdir,
                    no_transplant=a.no_transplant, threads=a.threads, encoder_params=a.encoder_param)
     log = (lambda s: None) if a.quiet else (lambda s: print(s, file=sys.stderr, flush=True))
-    res = run(opts, log=log)
+    try:
+        res = run(opts, log=log)
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     for n in res.notes:
         print(f"note: {n}", file=sys.stderr)
+    if res.failed_checks:
+        print(f"{res.failed_checks} forensic check(s) FAILED (see report)", file=sys.stderr)
+        return 1
+    if not opts.no_transplant and not res.transplant_applied:
+        print("warning: the camera's parameter sets could not be transplanted; the file carries the encoder's own", file=sys.stderr)
+        return 1
     return 0
 
 

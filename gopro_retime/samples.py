@@ -63,7 +63,7 @@ class BuiltVideo:
 
 
 def build_samples(aus: list[N.AccessUnit], conv: VideoConventions, param_sets: dict[str, list[bytes]],
-                  irap_param_sets: Optional[list[bytes]] = None) -> BuiltVideo:
+                  irap_param_sets: Optional[list[bytes]] = None, has_b_frames: bool = False) -> BuiltVideo:
     """Assemble samples: [AUD] [VPS SPS PPS on IRAP if in-band] VCL NALs. SEI and filler are always dropped.
     param_sets: the FINAL parameter sets (after any rewrite) that go into avcC/hvcC.
     irap_param_sets: the NALs to insert in-band on IRAP samples when conv.inband_param_sets (defaults to param_sets)."""
@@ -80,7 +80,7 @@ def build_samples(aus: list[N.AccessUnit], conv: VideoConventions, param_sets: d
             if aud:
                 nals.append(aud[0])
             else:
-                nals.append(_make_aud(codec, au))
+                nals.append(_make_aud(codec, au, has_b_frames))
         irap = au.is_irap
         if irap and conv.inband_param_sets:
             nals.extend(irap_param_sets)
@@ -104,10 +104,9 @@ def _patch_ref_idc(n: bytes, au: N.AccessUnit, conv: VideoConventions) -> bytes:
     return bytes([(n[0] & 0x9F) | (want << 5)]) + n[1:]
 
 
-def _make_aud(codec: str, au: N.AccessUnit) -> bytes:
+def _make_aud(codec: str, au: N.AccessUnit, has_b_frames: bool = False) -> bytes:
+    # primary_pic_type / pic_type: 0 = I only, 1 = I/P, 2 = I/P/B
+    t = 0 if au.is_irap else (2 if has_b_frames else 1)
     if codec == "h264":
-        # primary_pic_type: 0 = I only, 1 = I/P, 2 = I/P/B
-        t = 0 if au.is_irap else 1
         return bytes([0x09, (t << 5) | 0x10])
-    pic_type = 0 if au.is_irap else 1
-    return bytes([0x46, 0x01, (pic_type << 5) | 0x10])
+    return bytes([0x46, 0x01, (t << 5) | 0x10])

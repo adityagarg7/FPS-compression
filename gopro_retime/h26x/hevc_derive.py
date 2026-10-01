@@ -75,6 +75,7 @@ def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
     bufsize = bufsize or hrd_cpb or maxrate
     if bitrate > maxrate:
         bitrate = maxrate
+    bitrate = min(bitrate, int(maxrate * 0.97)) if maxrate else bitrate
     full_range = bool(vui.get("video_full_range_flag", 0)) if vui.get("video_signal_type_present_flag") else color.get("range") == "pc"
     min_cb = 1 << (sps_f["log2_min_luma_coding_block_size_minus3"] + 3)
     ctu = min_cb << sps_f["log2_diff_max_min_luma_coding_block_size"]

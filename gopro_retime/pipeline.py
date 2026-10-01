@@ -56,6 +56,7 @@ class Result:
     lossless_verified: Optional[bool]
     report_text: str = ""
     notes: list[str] = field(default_factory=list)
+    failed_checks: int = 0
 
 
 def codec_of(track: Track) -> str:
@@ -93,15 +94,28 @@ def _hrd_from_sps(sps_nal: bytes, codec: str) -> tuple[Optional[int], Optional[i
 def run(opts: Options, log: Log = print) -> Result:
     t0 = time.time()
     ff.check_tools()
+    if not os.path.exists(opts.src):
+        raise FileNotFoundError(f"source not found: {opts.src}")
+    if opts.reference and not os.path.exists(opts.reference):
+        raise FileNotFoundError(f"reference not found: {opts.reference}")
     src = SourceFile.open(opts.src)
+    _require_gopro(src)
     video = src.video
     codec = codec_of(video)
     out_fps = parse_fps(opts.fps)
+    if out_fps <= 0:
+        raise ValueError(f"invalid output frame rate {opts.fps}")
     src_fps = src.video_frame_rate()
+    if out_fps > src_fps:
+        raise ValueError(f"output rate {out_fps} is higher than the source's {src_fps}: frames would have to be duplicated or "
+                         f"interpolated, which a camera never does; only down-conversion is supported")
     plan = make_plan(src_fps, out_fps, video.sample_count, opts.mode)
     log(f"source: {codec} {video.sample_count} frames @ {src_fps} ({float(src_fps):.3f} fps) -> "
         f"{plan.out_frames} frames @ {out_fps} ({float(out_fps):.3f} fps), mode={plan.mode}")
     ref = SourceFile.open(opts.reference) if opts.reference else None
+    if ref is not None:
+        from . import reference as _reference
+        _reference.check_compatible(src, ref, out_fps)   # raises IncompatibleReference with a clear message
 
     workdir = opts.workdir or tempfile.mkdtemp(prefix="gopro-retime-")
     os.makedirs(workdir, exist_ok=True)
@@ -223,22 +237,37 @@ def run(opts: Options, log: Log = print) -> Result:
                 ref_sos = sos.learn(ref, codec, ref_ps)
                 sos_header_override = reference.merged_sos_header(sos_conv.header, ref_sos.header, video.timescale, ref.video.timescale, log)
             il_conv = interleave.measure(ref)
-            reference.apply(src, ref, log)
+            reference.apply(src, ref, log, out_fps)
         log(f"source writer conventions: MET latency {float(il_conv.latency) * 1000:.1f} ms, final payload after last audio={il_conv.final_payload_last}, "
             f"SOS types={sos_conv.type_codes if sos_conv else None}")
-        built = build_samples(aus, conv, final_ps)
+        built = build_samples(aus, conv, final_ps, has_b_frames=bool(settings.bframes))
         out_ts, out_fdur = _video_timescale(out_fps, ref)
         vid_entries = mb.parse_stsd(video.stbl.child("stsd"))
         _replace_codec_config(vid_entries[0], codec, final_ps)
         tracks: dict[str, mux.OutTrack] = {}
+        cts = _composition_offsets(aus, codec, final_ps, out_fdur) if settings.bframes else None
+        if cts and not video.has_ctts:
+            notes.append("output carries B-frames (ctts) although the source has none: structure differs from the camera's")
         tracks["video"] = mux.OutTrack("video", built.samples, [out_fdur] * len(built.samples), out_ts,
-                                       sync=built.sync, cts_offsets=None, stsd_entries=vid_entries, source=video)
+                                       sync=built.sync, cts_offsets=cts, stsd_entries=vid_entries, source=video)
 
         # ---- 6. audio ---------------------------------------------------------------------------
+        out_video_dur = Fraction(len(built.samples) * out_fdur, out_ts)
         for audio in src.tracks_of("audio"):
-            # copied verbatim (same AAC frames, same esds), only re-chunked by the interleaver
-            tracks[audio.key] = mux.OutTrack("audio", src.read_samples(audio), [s.duration for s in audio.samples],
-                                             audio.timescale, source=audio, media_duration=audio.media_duration)
+            # copied verbatim (same AAC frames, same esds), only re-chunked by the interleaver; when the camera ends the
+            # audio within one AAC frame after the video (HD8+ rule), keep that relation for the new video length
+            a_samples = src.read_samples(audio)
+            a_durs = [s.duration for s in audio.samples]
+            frame = a_durs[0] if a_durs else 1024
+            src_video_dur = Fraction(video.media_duration, video.timescale)
+            src_rule = len(a_durs) == -(-int(src_video_dur * audio.timescale) // frame)
+            if src_rule and plan.mode == "realtime":
+                want = -(-int(out_video_dur * audio.timescale) // frame)
+                if want < len(a_durs):
+                    a_samples, a_durs = a_samples[:want], a_durs[:want]
+                    notes.append(f"audio trimmed to {want} AAC frames so it ends within one frame after the video (camera rule)")
+            tracks[audio.key] = mux.OutTrack("audio", a_samples, a_durs, audio.timescale, source=audio,
+                                             media_duration=sum(a_durs))
 
         # ---- 7. timecode ------------------------------------------------------------------------
         tmcd = src.track("tmcd")
@@ -260,15 +289,20 @@ def run(opts: Options, log: Log = print) -> Result:
         gp = src.track("gpmd")
         if gp is not None and opts.gpmf != "drop":
             from . import gpmf_rebuild
+            out_audio_ms = None
+            a0 = next((t for t in tracks.values() if t.kind == "audio"), None)
+            if a0 is not None:
+                out_audio_ms = sum(a0.durations) * 1000 // a0.timescale
             payloads, durations = gpmf_rebuild.rebuild(src, plan, out_fps, drop_imu=(opts.imu == "drop"),
-                                                       drop_gps=(opts.gps == "drop"), reference=ref, log=log)
+                                                       drop_gps=(opts.gps == "drop"), reference=ref, log=log,
+                                                       out_audio_ms=out_audio_ms)
             tracks["gpmd"] = mux.OutTrack("gpmd", payloads, durations, gp.timescale, source=gp)
+        elif gp is not None:
+            notes.append("gpmd track dropped by request (a native file always has one)")
         udta_gpmf = src.moov.find("udta/GPMF")
         if udta_gpmf is not None and plan.mode == "realtime":
             from . import gpmf_rebuild
             udta_gpmf.data = gpmf_rebuild.patch_global_settings_fps(udta_gpmf.data, out_fps, opts.imu == "drop", log=log)
-        elif gp is not None:
-            notes.append("gpmd track dropped by request (a native file always has one)")
 
         # ---- 9. interleave + SOS + write -------------------------------------------------------
         order = interleave.order_samples(src, tracks, il_conv)
@@ -282,17 +316,20 @@ def run(opts: Options, log: Log = print) -> Result:
         report_text = ""
         if opts.verify:
             from . import verify
-            m_es = ff.decode_md5(es_path) if lossless is None else None
             m_out = ff.decode_md5(opts.out)
             m_ref = ff.decode_md5(es_path if not applied else os.path.join(workdir, "video.rewritten" + settings.es_suffix))
             ok = (m_out == m_ref)
             rep = verify.full_report(opts.src, opts.out, codec, opts.reference, external_tools=opts.external_tools,
-                                     imu_dropped=(opts.imu == "drop" and opts.gpmf != "drop"), gps_dropped=(opts.gps == "drop"))
+                                     imu_dropped=(opts.imu == "drop" and opts.gpmf != "drop"), gps_dropped=(opts.gps == "drop"),
+                                     interleave_conv=il_conv, sos_conv=sos_conv, sos_header=sos_header_override)
             rep.add("output video decodes identically to the encoder's elementary stream", "PASS" if ok else "FAIL", f"{m_ref} vs {m_out}")
             report_text = rep.render()
             log(report_text)
+            failed = rep.failed
+        else:
+            failed = 0
         log(f"done in {time.time() - t0:.1f}s -> {opts.out}")
-        return Result(opts.out, plan, settings, applied, lossless, report_text, notes)
+        return Result(opts.out, plan, settings, applied, lossless, report_text, notes, failed)
     finally:
         if not opts.keep_temp and not opts.workdir:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -303,11 +340,42 @@ def _measure_slice_conventions(codec: str, samples: list[bytes], ps: dict[str, l
         from .h26x import h264
         sps_f = h264.parse_sps_nal(ps["sps"][0])
         pps_f = h264.parse_pps_nal(ps["pps"][0], sps_f)
-        return rewrite.measure_h264_conventions(samples, sps_f, pps_f)
+        return rewrite.measure_h264_conventions(samples, sps_f, pps_f, ps)
     from .h26x import hevc, hevc_rewrite
     sps_f = hevc.parse_sps_nal(ps["sps"][0])
     pps_f = hevc.parse_pps_nal(ps["pps"][0], sps_f)
     return hevc_rewrite.measure_hevc_conventions(samples, sps_f, pps_f)
+
+
+def _require_gopro(src: SourceFile) -> None:
+    names = " ".join(t.handler_name for t in src.tracks)
+    brand = src.ftyp.data[:4]
+    if "GoPro" not in names or src.track("tmcd") is None or brand != b"mp41":
+        raise ValueError(f"input does not look like a GoPro camera original (ftyp brand {brand!r}, handlers {names.strip()!r}); "
+                         "re-muxed or edited files cannot be converted faithfully")
+
+
+def _composition_offsets(aus: list[N.AccessUnit], codec: str, ps: dict[str, list[bytes]], fdur: int) -> Optional[list[int]]:
+    """ctts offsets from the picture order counts (display order) of the final stream; None when nothing is reordered."""
+    if codec == "h264":
+        from .h26x import h264
+        sps_f = h264.parse_sps_nal(ps["sps"][0]); pps_f = h264.parse_pps_nal(ps["pps"][0], sps_f)
+        pics = rewrite._h264_poc_sequence(aus, sps_f, pps_f)
+    else:
+        from .h26x import hevc, hevc_rewrite
+        sps_f = hevc.parse_sps_nal(ps["sps"][0]); pps_f = hevc.parse_pps_nal(ps["pps"][0], sps_f)
+        pics = hevc_rewrite._poc_sequence(aus, sps_f, pps_f)
+    period = -1
+    keys = []
+    for i, (info, _s) in enumerate(pics):
+        if info["idr"] or info.get("irap"):
+            period += 1
+        keys.append((period, info["poc"], i))
+    display = {i: pos for pos, (_p, _poc, i) in enumerate(sorted(keys))}
+    delay = max(i - display[i] for i in range(len(pics)))
+    if delay <= 0:
+        return None
+    return [(display[i] - i + delay) * fdur for i in range(len(pics))]
 
 
 def _touch_like_camera(path: str, src: SourceFile, video_duration: int, video_ts: int) -> None:

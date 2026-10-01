@@ -72,6 +72,8 @@ def derive_h264(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
     bufsize = bufsize or hrd_cpb or maxrate
     if bitrate > maxrate:
         bitrate = maxrate
+    # ABR overshoots by a few percent; keep the measured average under the HRD rate the SPS declares
+    bitrate = min(bitrate, int(maxrate * 0.97)) if maxrate else bitrate
     full_range = bool(vui.get("video_full_range_flag", 0)) if vui.get("video_signal_type_present_flag") else color.get("range") == "pc"
     st = EncoderSettings(
         codec="h264", pix_fmt=pix_fmt, width=width, height=height, bitrate=bitrate, maxrate=maxrate, bufsize=bufsize,
@@ -85,7 +87,10 @@ def derive_h264(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
     p["cabac"] = str(pps_f["entropy_coding_mode_flag"])
     p["8x8dct"] = str(pps_f.get("transform_8x8_mode_flag") or 0)
     p["weightp"] = "2" if pps_f["weighted_pred_flag"] else "0"
-    p["weightb"] = "1" if pps_f["weighted_bipred_idc"] == 1 else "0"
+    # x264 'weightb' = implicit weighted bi-prediction (weighted_bipred_idc 2); explicit (1) cannot be produced
+    p["weightb"] = "1" if pps_f["weighted_bipred_idc"] == 2 else "0"
+    if pps_f["weighted_bipred_idc"] == 1:
+        notes.append("source PPS uses explicit weighted bi-prediction (idc 1); x264 cannot reproduce it")
     p["constrained-intra"] = str(pps_f["constrained_intra_pred_flag"])
     p["chroma-qp-offset"] = str(pps_f["chroma_qp_index_offset"])  # x264 shifts this with psy-rd: fixed by calibrate()
     p["open-gop"] = "0"

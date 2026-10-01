@@ -194,6 +194,8 @@ def insert_epb(rbsp: bytes) -> bytes:
             zeros = 0
         out.append(b)
         zeros = zeros + 1 if b == 0 else 0
+    if zeros >= 2:
+        out.append(3)  # 7.4.2: an RBSP ending in a cabac_zero_word (0x0000) gets a final 0x03 so the NAL never ends in 0x00
     return bytes(out)
 
 

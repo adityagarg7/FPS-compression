@@ -91,8 +91,7 @@ def order_samples(src: SourceFile, tracks: dict[str, OutTrack], conv: Optional[I
     a = _merged_audio(tracks, audio_keys) if audio_keys else None
     t = tracks.get("tmcd")
     m = tracks.get("gpmd")
-    vt = [Fraction(sum(v.durations[:i]), v.timescale) for i in range(len(v.durations))] if v else []
-    # prefix sums (faster)
+    vt: list[Fraction] = []
     if v:
         acc = 0
         vt = []

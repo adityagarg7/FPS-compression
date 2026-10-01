@@ -81,7 +81,7 @@ def _leaf_map(box: mb.Box, path: str = "") -> dict[str, bytes]:
     return out
 
 
-def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta: bool = True) -> None:
+def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta: bool = True, interleave_conv=None) -> None:
     # ftyp
     rep.add("ftyp bytes identical", "PASS" if src.ftyp.serialize() == out.ftyp.serialize() else "FAIL",
             f"{src.ftyp.data!r} vs {out.ftyp.data!r}")
@@ -187,7 +187,7 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
     try:
         from . import interleave as _il
         from .mux import OutTrack as _OT
-        conv = _il.measure(src)
+        conv = interleave_conv or _il.measure(src)
         otracks = {t.key: _OT(t.kind, [b""] * t.sample_count, [s.duration for s in t.samples], t.timescale, key=t.key) for t in out.tracks if t.kind != "fdsc"}
         expected = _il.order_samples(out, otracks, conv)
         actual = [(t.key, s.index) for t, s in out.all_samples_in_file_order() if t.kind != "fdsc"]
@@ -368,7 +368,7 @@ def compare_ffprobe(src_path: str, out_path: str, rep: Report) -> None:
         rep.add(f"ffprobe stream {kind}: tags identical (handler_name, encoder, vendor_id, ...)", "PASS" if not tdiffs else "FAIL", str(tdiffs))
 
 
-_MI_IGNORE = re.compile(r"^(mdhd_Duration|Bits-\(Pixel\*Frame\)|CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
+_MI_IGNORE = re.compile(r"^(Format_Settings_GOP|Encoded_Date|Tagged_Date|FrameRate_Mode|BitRate_Mode|BitRate_Maximum|BitRate_Nominal|Delay|TimeCode_FirstFrame|TimeCode_Source|StreamSize|OverallBitRate|FrameRate|FrameCount|Duration|mdhd_Duration|Bits-\(Pixel\*Frame\)|CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
 
 
 def compare_mediainfo(src_path: str, out_path: str, rep: Report) -> None:
@@ -497,11 +497,42 @@ def check_gpmf_frame_locked_streams(out: SourceFile, rep: Report) -> None:
                 "; ".join(problems[:6]) if problems else f"checked {checked}")
 
 
+def check_sos_track(src: SourceFile, out: SourceFile, codec: str, rep: Report, sos_conv=None, sos_header: Optional[bytes] = None) -> None:
+    """Every fdsc sample of the output must equal what the camera's writer would have produced for the output's own
+    sample tables (same regeneration the test-suite proves byte-exact on real files)."""
+    from . import sos as _sos
+    from .mux import OutTrack as _OT
+    fd = out.track("fdsc")
+    if fd is None:
+        if src.track("fdsc") is not None:
+            rep.add("SOS track present", "FAIL", "source has a GoPro SOS track, output has none")
+        return
+    try:
+        ps = N.parameter_sets_from_entry_children(out.video.stsd_entries[0].children, codec)
+        conv = sos_conv or _sos.learn(src, codec, N.parameter_sets_from_entry_children(src.video.stsd_entries[0].children, codec))
+        tracks = {t.key: _OT(t.kind, out.read_samples(t), [s.duration for s in t.samples], t.timescale,
+                             sync=[s.is_sync for s in t.samples] if t.has_stss else None, key=t.key) for t in out.tracks if t.kind != "fdsc"}
+        order = [(t.key, s.index) for t, s in out.all_samples_in_file_order() if t.kind != "fdsc"]
+        header = sos_header or _sos.patch_header_timescale(conv.header, src.video.timescale, out.video.timescale)
+        expected = _sos.make_builder(src, codec, ps, out.video.timescale, out.video_frame_duration(), conv, header_override=header)(order, tracks)
+        actual = out.read_samples(fd)
+        if len(expected) != len(actual):
+            rep.add("SOS track: descriptor count", "FAIL", f"{len(actual)} samples, expected {len(expected)}")
+            return
+        bad = [i for i, (a, b) in enumerate(zip(expected, actual)) if a != b]
+        rep.add("SOS track: header, parameter-set record and every descriptor regenerate byte-identically", "PASS" if not bad else "FAIL",
+                f"{len(actual)} samples" if not bad else f"{len(bad)} mismatching samples, first at {bad[:5]}")
+    except Exception as e:  # noqa: BLE001
+        rep.add("SOS track: regeneration check", "WARN", f"could not evaluate: {e}")
+
+
 def full_report(src_path: str, out_path: str, codec: str, reference_path: Optional[str] = None,
-                external_tools: bool = True, imu_dropped: bool = False, gps_dropped: bool = False) -> Report:
+                external_tools: bool = True, imu_dropped: bool = False, gps_dropped: bool = False,
+                interleave_conv=None, sos_conv=None, sos_header: Optional[bytes] = None) -> Report:
     rep = Report()
     src, out = SourceFile.open(src_path), SourceFile.open(out_path)
-    compare_container(src, out, rep)
+    compare_container(src, out, rep, interleave_conv=interleave_conv)
+    check_sos_track(src, out, codec, rep, sos_conv, sos_header)
     check_av_duration_relation(out, rep)
     check_fingerprints(out_path, rep)
     check_gpmf_frame_locked_streams(out, rep)

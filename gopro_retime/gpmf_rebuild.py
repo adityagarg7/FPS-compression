@@ -19,6 +19,10 @@ from .model import SourceFile
 from .plan import FramePlan, frames_per_gpmf_payload
 
 IMU_KEYS = {b"ACCL", b"GYRO", b"MAGN", b"GRAV", b"CORI", b"IORI"}
+# streams sampled on the audio clock (10 Hz on a 1 s clock): at exactly 50 fps they coincide with every 5th frame, so
+# timing alone cannot tell them from frame-locked streams; they are always re-binned by time
+AUDIO_CLOCK_KEYS = {b"WNDM", b"MWET", b"AALP"}
+MAX_STRIDE = 4
 GPS_KEYS = {b"GPS5", b"GPS9", b"GPSU", b"GPSF", b"GPSP", b"GPSA"}
 META_KEYS = {b"STMP", b"TSMP", b"STNM", b"SIUN", b"UNIT", b"SCAL", b"TYPE", b"MTRX", b"ORIN", b"ORIO", b"TMPC", b"GPSF",
              b"GPSU", b"GPSP", b"GPSA", b"VPTS", b"TIMO", b"EMPT", b"RMRK", b"TICK", b"TOCK", b"DVID", b"DVNM", b"STPS"}
@@ -46,7 +50,6 @@ class Stream:
     counts: list[int] = field(default_factory=list)       # per source payload (instances)
     stmps: list[Optional[int]] = field(default_factory=list)
     has_stmp: bool = False
-    phase_us: Optional[Fraction] = None                   # B0 for timed streams
     t0: Optional[int] = None                              # first STMP (frame-locked streams)
     name: bytes = b""
     stmp_per_frame: Optional[Fraction] = None             # measured STMP units per video frame (frame-locked streams)
@@ -140,14 +143,14 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
         full = [st.counts[i] for i in full_idx] if full_idx else st.counts[:1]
         median = sorted(full)[len(full) // 2] if full else st.counts[0]
         # frame-locked classes need per-payload timestamps (HERO8+); older firmware bins irregularly -> keep exact windows
-        aligned = st.has_stmp and _stmp_frame_aligned(st, step, frames_per_payload)
+        aligned = st.has_stmp and st.key not in AUDIO_CLOCK_KEYS and _stmp_frame_aligned(st, step, frames_per_payload)
         st.stmp_per_frame = step
         if aligned and abs(total - covered) <= 2 and abs(median - frames_per_payload) <= 1:
             st.cls, st.stride = "per_frame", 1
         else:
             st.cls = "timed"
             if aligned:
-                for k in range(2, 9):
+                for k in range(2, MAX_STRIDE + 1):
                     exp = frames_per_payload / k
                     if abs(median - exp) < 1 and abs(total - covered / k) <= 2:
                         st.cls, st.stride = "stride", k
@@ -184,7 +187,10 @@ def _stmp_frame_aligned(st: Stream, step: Fraction, frames_per_payload: int, tol
     if len(vals) < 2 or step <= 0:
         return True
     t0 = vals[0][1]
+    last_idx = len(st.stmps) - 1
     for i, v in vals[1:]:
+        if i == last_idx and len(vals) > 2:
+            continue  # the final partial payload is flushed at the stop event, not on the frame grid
         n = (v - t0) / step
         k = round(n)
         if k <= 0 or abs((v - t0) - k * step) > tol_us:
@@ -227,29 +233,8 @@ def _reconstruct_times(st: Stream, period_us: int) -> None:
             st.samples[first_idx[p] + k].t = s0_f + per * k
 
 
-def _measure_phase(st: Stream, period_us: int) -> Fraction:
-    """Window phase B0 (µs) such that source payload p holds samples with B0 + p*period <= t < B0 + (p+1)*period."""
-    los, his = [], []
-    acc = 0
-    for p, c in enumerate(st.counts):
-        if p >= 1 and c > 0 and acc > 0:
-            t_first = st.samples[acc].t
-            t_prev = st.samples[acc - 1].t
-            if t_first is not None and t_prev is not None:
-                his.append(t_first - p * period_us)
-                los.append(t_prev - p * period_us)
-        acc += c
-    if not his:
-        return Fraction(0)
-    lo, hi = max(los), min(his)
-    if lo < hi:
-        return (lo + hi) / 2
-    his_s, los_s = sorted(his), sorted(los)
-    return (his_s[len(his_s) // 2] + los_s[len(los_s) // 2]) / 2
-
-
 # ---- output -------------------------------------------------------------------------------------------------
-def _output_durations(src: SourceFile, n_out: int, out_fps: Fraction) -> tuple[list[int], int]:
+def _output_durations(src: SourceFile, n_out: int, out_fps: Fraction, out_audio_ms: Optional[int] = None) -> tuple[list[int], int]:
     """Payload durations (ms) for the output, following the source firmware's rule (partial final payload or not)."""
     gp = src.track("gpmd")
     fpp, period_ms = frames_per_gpmf_payload(out_fps)
@@ -259,8 +244,8 @@ def _output_durations(src: SourceFile, n_out: int, out_fps: Fraction) -> tuple[l
     partial_last = src_durs[-1] != src_period
     audio = src.track("audio")
     if partial_last and audio is not None and audio.media_duration * 1000 // audio.timescale == sum(src_durs):
-        # newer firmware: the MET track ends with the audio (audio is copied verbatim, so the total is unchanged)
-        total = sum(src_durs)
+        # newer firmware: the MET track ends with the audio
+        total = out_audio_ms if out_audio_ms else sum(src_durs)
         n_pay = (total + period_ms - 1) // period_ms
         durs = [period_ms] * n_pay
         durs[-1] = total - period_ms * (n_pay - 1)
@@ -285,7 +270,7 @@ def _output_durations(src: SourceFile, n_out: int, out_fps: Fraction) -> tuple[l
 
 
 def rebuild(src: SourceFile, plan: FramePlan, out_fps: Fraction, drop_imu: bool, drop_gps: bool,
-            reference: Optional[SourceFile] = None, log=print) -> tuple[list[bytes], list[int]]:
+            reference: Optional[SourceFile] = None, log=print, out_audio_ms: Optional[int] = None) -> tuple[list[bytes], list[int]]:
     gp = src.track("gpmd")
     raw = src.read_samples(gp)
     payloads = [gpmf.parse(b) for b in raw]
@@ -297,7 +282,7 @@ def rebuild(src: SourceFile, plan: FramePlan, out_fps: Fraction, drop_imu: bool,
     fps_s, fps_o = plan.src_fps, plan.out_fps
     f_s = round(Fraction(src_period_ms, 1000) * fps_s)          # frames per source payload (50 / 30)
     n_devices = max(len(p) for p in payloads)
-    durs, f_o = _output_durations(src, plan.out_frames, out_fps)
+    durs, f_o = _output_durations(src, plan.out_frames, out_fps, out_audio_ms)
     per_device = [_rebuild_device(src, plan, out_fps, payloads, d, src_durs, src_period_ms, src_period_us, f_s, durs, f_o,
                                   drop_imu, drop_gps, log) for d in range(n_devices)]
     out_payloads = [b"".join(dev[j] for dev in per_device if j < len(dev)) for j in range(len(durs))]
@@ -381,9 +366,26 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
         per_stream_out[st.index] = buckets
         per_stream_stmp[st.index] = stmps
 
+    # first sample time of each timed stream in each source payload (for GPSU shifting)
+    per_stream_src_first: dict[int, dict[int, Optional[Fraction]]] = {}
+    for st in streams:
+        if st.cls == "timed":
+            d: dict[int, Optional[Fraction]] = {}
+            acc = 0
+            for pi, c in enumerate(st.counts):
+                d[pi] = st.samples[acc].t if c and st.samples[acc].t is not None else None
+                acc += c
+            per_stream_src_first[st.index] = d
     # --- assemble payloads ---
     out_payloads: list[bytes] = []
-    cum: dict[int, int] = {st.index: 0 for st in streams}
+    # TSMP continues across chapter files: carry the source's initial offset (scaled for frame-locked streams)
+    cum: dict[int, int] = {}
+    for st in streams:
+        first_tsmp = _first_tsmp(payloads, device, st)
+        offset = max(0, first_tsmp - st.counts[0]) if first_tsmp is not None else 0
+        if st.cls in ("per_frame", "stride"):
+            offset = round(offset * fps_o / fps_s)
+        cum[st.index] = offset
     n_src_pay = len(payloads)
     for j in range(n_pay):
         t_first_ms = Fraction(j * period_o_ms)
@@ -419,6 +421,9 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
                     items.append(gpmf.KLV(b"STMP", it.type, it.size, 1, (v if v is not None else 0).to_bytes(8, "big")))
                 elif it.key == b"TSMP":
                     items.append(gpmf.KLV(b"TSMP", it.type, it.size, 1, cum[st.index].to_bytes(4, "big")))
+                elif it.key == b"GPSU" and it.type == ord("U") and st.cls == "timed" and samples and samples[0].t is not None:
+                    # GPS fix time of the payload's FIRST sample: shift the source payload's GPSU by the time difference
+                    items.append(gpmf.KLV(b"GPSU", it.type, it.size, 1, _shift_gpsu(it.data, samples[0].t, per_stream_src_first.get(st.index, {}).get(p_src))))
                 elif it.key == key:
                     if data_written:
                         continue
@@ -442,6 +447,33 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
     log(f"gpmf: device {device}: {len(streams)} streams {kinds}; {n_pay} payloads x {period_o_ms} ms (last {durs[-1]} ms)"
         + (f"; dropped {sorted(k.decode() for k in drop_keys & {s.key for s in streams if s.key})}" if drop_keys else ""))
     return out_payloads
+
+
+def _first_tsmp(payloads: list[list[gpmf.KLV]], device: int, st: Stream) -> Optional[int]:
+    for pl in payloads:
+        if device >= len(pl):
+            continue
+        for strm in pl[device].children_of("STRM"):
+            key, _g = _strm_data_key(strm)
+            if key == st.key and _stream_name(strm) == st.name:
+                t = strm.child("TSMP")
+                return int.from_bytes(t.data[:4], "big") if t is not None else None
+    return None
+
+
+def _shift_gpsu(data: bytes, t_new: Fraction, t_src: Optional[Fraction]) -> bytes:
+    """GPSU 'yymmddhhmmss.sss' (UTC) shifted by (t_new - t_src) microseconds; unchanged when it cannot be parsed."""
+    import datetime as _dt
+    if t_src is None:
+        return data
+    txt = data.rstrip(b"\x00").decode("ascii", "replace")
+    try:
+        base = _dt.datetime.strptime(txt[:16], "%y%m%d%H%M%S.%f")
+    except ValueError:
+        return data
+    shifted = base + _dt.timedelta(microseconds=int(t_new - t_src))
+    out = shifted.strftime("%y%m%d%H%M%S.%f")[:16].encode("ascii")
+    return out.ljust(len(data), b"\x00")[:len(data)]
 
 
 def patch_global_settings_fps(udta_gpmf: bytes, out_fps: Fraction, orientation_dropped: bool, log=print) -> bytes:

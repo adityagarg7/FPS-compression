@@ -116,6 +116,8 @@ def write_output(src: SourceFile, out_path: str, tracks: dict[str, OutTrack], or
         layout.append(MdatItem(kind, idx, len(tracks[kind].samples[idx])))
     total = sum(it.size for it in layout)
     mdat_large = (total + 8) > 0xFFFFFFFF
+    if mdat_large:
+        raise ValueError("output would exceed 4 GB: the camera chapters recordings into < 4 GB files (co64 / 64-bit mdat would be a fingerprint); split the source first")
     mdat_hdr = 16 if mdat_large else 8
     pos = len(ftyp_bytes) + mdat_hdr
     offsets: dict[str, list[int]] = {k: [0] * len(t.samples) for k, t in tracks.items()}

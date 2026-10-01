@@ -38,8 +38,10 @@ class SliceConventions:
     poc_lsb_at_idr: int = 0
 
 
-def measure_h264_conventions(samples: list[bytes], sps_f: dict, pps_f: dict) -> SliceConventions:
+def measure_h264_conventions(samples: list[bytes], sps_f: dict, pps_f: dict, ps: Optional[dict[str, list[bytes]]] = None) -> SliceConventions:
     conv = SliceConventions()
+    if ps and ps.get("sps"):
+        conv.nal_ref_idc_ps = (ps["sps"][0][0] >> 5) & 3
     idr_ids: list[int] = []
     for smp in samples:
         for n in N.split_length_prefixed(smp):
@@ -70,7 +72,7 @@ def measure_h264_conventions(samples: list[bytes], sps_f: dict, pps_f: dict) -> 
 # ---- H.264 ---------------------------------------------------------------------------------------
 _H264_SPS_MUST_MATCH = [
     "profile_idc", "chroma_format_idc", "separate_colour_plane_flag", "bit_depth_luma_minus8", "bit_depth_chroma_minus8",
-    "qpprime_y_zero_transform_bypass_flag", "seq_scaling_matrix_present_flag", "pic_width_in_mbs_minus1",
+    "qpprime_y_zero_transform_bypass_flag", "seq_scaling_matrix_present_flag", "pic_width_in_mbs_minus1", "direct_8x8_inference_flag",
     "pic_height_in_map_units_minus1", "frame_mbs_only_flag", "mb_adaptive_frame_field_flag", "frame_cropping_flag",
     "frame_crop_left_offset", "frame_crop_right_offset", "frame_crop_top_offset", "frame_crop_bottom_offset",
 ]
@@ -86,6 +88,10 @@ def _check_match(enc: dict, tgt: dict, keys: list[str], what: str, skip_if_equal
         a, b = enc.get(k), tgt.get(k)
         if a is None and b is None:
             continue
+        if k == "second_chroma_qp_index_offset":
+            # inferred equal to chroma_qp_index_offset when the PPS extension is absent (7.4.2.2)
+            a = a if a is not None else enc.get("chroma_qp_index_offset", 0)
+            b = b if b is not None else tgt.get("chroma_qp_index_offset", 0)
         # a missing PPS extension means transform_8x8_mode_flag == 0 etc.
         a = a if a is not None else 0
         b = b if b is not None else 0
@@ -175,6 +181,20 @@ def transplant_h264(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
             raise RewriteUnsafe("target pic_order_cnt_type 2 but encoder stream reorders pictures")
     t_max_frame_num = 1 << (ts["log2_max_frame_num_minus4"] + 4)
     t_max_poc_lsb = 1 << (ts.get("log2_max_pic_order_cnt_lsb_minus4", 0) + 4)
+    if ts["pic_order_cnt_type"] == 0:
+        # the decoder reconstructs POC from prevPicOrderCnt of the previous REFERENCE picture: every step must stay
+        # strictly inside half the lsb range (8.2.1.1)
+        prev_ref_poc = 0
+        base = 0
+        for info, _sl in pics:
+            if info["idr"]:
+                base = info["poc"]; prev_ref_poc = 0
+                continue
+            rel = info["poc"] - base
+            if abs(rel - prev_ref_poc) >= t_max_poc_lsb // 2:
+                raise RewriteUnsafe(f"POC step {rel - prev_ref_poc} too large for the target log2_max_pic_order_cnt_lsb {ts.get('log2_max_pic_order_cnt_lsb_minus4', 0) + 4}")
+            if info["is_ref"]:
+                prev_ref_poc = rel
     qp_shift = ep["pic_init_qp_minus26"] - tp["pic_init_qp_minus26"]
     changed: set[str] = set()
     new_aus: list[AccessUnit] = []
