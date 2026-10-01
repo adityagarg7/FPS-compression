@@ -60,7 +60,7 @@ def build_ffmpeg_command(src_path: str, plan: FramePlan, st: EncoderSettings, ou
         if expr != "1":
             vf.append(f"select='{expr}'")
     vf.append(f"setpts=N/({fps_str})/TB")
-    cmd = [ff.FFMPEG, "-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-stats"]
+    cmd = [ff.FFMPEG, "-y", "-hide_banner", "-nostdin", "-loglevel", "warning", "-nostats"]
     if decode_threads:
         cmd += ["-threads", str(decode_threads)]
     cmd += ["-i", src_path, "-map", "0:v:0", "-an", "-sn", "-dn",
@@ -114,10 +114,23 @@ def encode(src_path: str, plan: FramePlan, st: EncoderSettings, out_es: str, log
     if two_pass:
         passlog = os.path.join(workdir, "ratecontrol.log")
         cmd1 = build_ffmpeg_command(src_path, plan, st, os.devnull, pass_num=1, passlog=passlog)
-        ff.run(cmd1, log=log, capture=True)
+        _report_encoder_warnings(ff.run(cmd1, log=log, capture=True), log)
         cmd2 = build_ffmpeg_command(src_path, plan, st, out_es, pass_num=2, passlog=passlog)
-        ff.run(cmd2, log=log, capture=True)
+        _report_encoder_warnings(ff.run(cmd2, log=log, capture=True), log)
     else:
         cmd = build_ffmpeg_command(src_path, plan, st, out_es)
-        ff.run(cmd, log=log, capture=True)
+        p = ff.run(cmd, log=log, capture=True)
+        _report_encoder_warnings(p, log)
     return out_es
+
+
+def _report_encoder_warnings(p, log) -> None:
+    """Encoder option problems are only warnings for ffmpeg; they must never pass silently here."""
+    err = (p.stderr or b"").decode("utf-8", "replace")
+    bad = [ln for ln in err.splitlines() if "Error parsing option" in ln or "invalid" in ln.lower() or "unknown option" in ln.lower()]
+    if bad:
+        raise ff.ToolError("encoder rejected options:\n" + "\n".join(bad[:10]))
+    if log:
+        for ln in err.splitlines():
+            if ln.strip() and "deprecated" not in ln:
+                log("ffmpeg: " + ln.strip())

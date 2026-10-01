@@ -145,9 +145,9 @@ def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
         notes.append("source enables transquant bypass; x265 cu-lossless used")
     dis, beta, tc = facts["deblock"]
     if dis:
-        p["deblock"] = "0:0"; p["no-deblock"] = "1"
+        p["deblock"] = "0,0"; p["no-deblock"] = "1"
     else:
-        p["deblock"] = f"{beta}:{tc}"
+        p["deblock"] = f"{beta},{tc}"
     p["slices"] = str(facts["slices_per_pic"])
     if (vui.get("vui_hrd_parameters_present_flag") or hrd_br) and st.maxrate:
         p["hrd"] = "1"

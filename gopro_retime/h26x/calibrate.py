@@ -58,7 +58,10 @@ def _probe_encode(st: EncoderSettings, workdir: str) -> tuple[dict, dict]:
     # swap the input for a lavfi generator with the right pixel format
     i = cmd.index("-i")
     cmd[i:i + 2] = ["-f", "lavfi", "-i", f"testsrc2=size={size}:rate={fps}", "-t", "0.12"]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pr = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err = pr.stderr.decode("utf-8", "replace")
+    if "Error parsing option" in err:
+        raise subprocess.CalledProcessError(1, cmd, stderr=pr.stderr)
     nals = list(N.iter_annexb_file(out))
     codec = st.codec
     sps_n = next(n for n in nals if N.nal_type(n, codec) == (N.H264_SPS if codec == "h264" else N.HEVC_SPS))
@@ -167,17 +170,17 @@ def _fix_hevc(st: EncoderSettings, k: str, a, b, adjusted: list[str]) -> bool:
         return False
     elif k == "pps_deblocking_filter_disabled_flag":
         if b:
-            p["deblock"] = "0:0"; p["no-deblock"] = "1"
+            p["deblock"] = "0,0"; p["no-deblock"] = "1"
         else:
             p.pop("no-deblock", None)
     elif k in ("pps_beta_offset_div2", "pps_tc_offset_div2"):
-        beta = p.get("deblock", "0:0").split(":")[0]
-        tc = p.get("deblock", "0:0").split(":")[-1]
+        beta = p.get("deblock", "0,0").split(",")[0]
+        tc = p.get("deblock", "0,0").split(",")[-1]
         if k == "pps_beta_offset_div2":
             beta = str(b)
         else:
             tc = str(b)
-        p["deblock"] = f"{beta}:{tc}"
+        p["deblock"] = f"{beta},{tc}"
     else:
         return False
     adjusted.append(f"{k}: {a} -> {b}")

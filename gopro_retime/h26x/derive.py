@@ -100,10 +100,10 @@ def derive_h264(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
     p["slices"] = str(facts["slices_per_pic"])
     idc, alpha, beta = facts["deblock"]
     if idc == 1:
-        p["deblock"] = "0:0"
+        p["deblock"] = "0,0"
         p["no-deblock"] = "1"
     else:
-        p["deblock"] = f"{alpha}:{beta}"
+        p["deblock"] = f"{alpha},{beta}"
     if nal_hrd:
         p["nal-hrd"] = "cbr" if cbr else "vbr"
         p["vbv-maxrate"] = str(max(1, maxrate // 1000))

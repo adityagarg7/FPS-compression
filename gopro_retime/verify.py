@@ -108,8 +108,20 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
             changed.append(k)
     rep.add("non-table moov boxes byte-identical (udta, hdlr, dinf, vmhd/smhd/gmhd, iods, ...)",
             "PASS" if not changed else "FAIL", ", ".join(changed) if changed else f"{len(sm)} leaves compared")
+    # tracks matched by key (a track dropped on purpose is reported, not misaligned)
+    pairs = []
+    out_by_key = {t.key: t for t in out.tracks}
+    for t_s in src.tracks:
+        t_o = out_by_key.get(t_s.key)
+        if t_o is None:
+            rep.add(f"track {t_s.key} ({t_s.handler_name!r}) present in output", "WARN", "dropped by request; every native file has it")
+        else:
+            pairs.append((t_s, t_o))
+    for t_o in out.tracks:
+        if t_o.key not in {t.key for t in src.tracks}:
+            rep.add(f"track {t_o.key} ({t_o.handler_name!r}) not in source", "FAIL")
     # stsd per track (fixed part + non-codec-config children)
-    for t_s, t_o in zip(src.tracks, out.tracks):
+    for t_s, t_o in pairs:
         es, eo = t_s.stsd_entries, t_o.stsd_entries
         if len(es) != len(eo) or es[0].format != eo[0].format:
             rep.add(f"stsd[{t_s.kind}] entry format", "FAIL", f"{[e.format for e in es]} vs {[e.format for e in eo]}")
@@ -134,7 +146,7 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
                     rep.add(f"{cs.type.decode()} differs from source (expected: VUI timing changes only)", "INFO",
                             f"{len(cs.data)} vs {len(co.data)} bytes")
     # track-level conventions
-    for t_s, t_o in zip(src.tracks, out.tracks):
+    for t_s, t_o in pairs:
         k = t_s.kind
         rep.add(f"{k}: handler name", "PASS" if t_s.handler_name == t_o.handler_name else "FAIL",
                 f"{t_s.handler_name!r} vs {t_o.handler_name!r}")
