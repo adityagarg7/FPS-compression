@@ -35,8 +35,10 @@ HEVC_KEYS_PPS = ["sign_data_hiding_enabled_flag", "init_qp_minus26", "constraine
                  "entropy_coding_sync_enabled_flag", "pps_loop_filter_across_slices_enabled_flag",
                  "pps_deblocking_filter_disabled_flag", "pps_beta_offset_div2", "pps_tc_offset_div2",
                  "pps_scaling_list_data_present_flag", "log2_parallel_merge_level_minus2"]
-# init_qp_minus26 is syntax-only (slice_qp_delta compensates) but listed so we can see it; excluded from 'residual'
-_SYNTAX_ONLY = {"init_qp_minus26", "direct_8x8_inference_flag"}
+# init_qp_minus26 is syntax-only (slice_qp_delta compensates) but listed so we can see it; excluded from 'residual'.
+# direct_8x8_inference_flag is NOT syntax-only (8.4.1.2.x direct-mode derivation); x264 always writes 1, so a camera SPS
+# with 0 (level < 3 only) is reported as a residual and the transplant refuses it.
+_SYNTAX_ONLY = {"init_qp_minus26"}
 
 
 @dataclass
