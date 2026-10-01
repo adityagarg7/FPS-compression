@@ -703,13 +703,14 @@ def _independent_slice_fields(io: BitIO, f: dict, nal_unit_type: int, sps_f: dic
         if sps_f["sps_temporal_mvp_enabled_flag"]:
             io.flag(f, "slice_temporal_mvp_enabled_flag")
     f["_num_pic_total_curr"] = num_pic_total_curr
-    f["slice_sao_chroma_flag"] = 0
     if sps_f["sample_adaptive_offset_enabled_flag"]:
         io.flag(f, "slice_sao_luma_flag")
         if chroma_array_type != 0:
             io.flag(f, "slice_sao_chroma_flag")
+        else:
+            f["slice_sao_chroma_flag"] = 0
     else:
-        f["slice_sao_luma_flag"] = 0
+        f["slice_sao_luma_flag"] = f["slice_sao_chroma_flag"] = 0
     st = f["slice_type"]
     is_b = st == SLICE_B
     n_l0 = pps_f["num_ref_idx_l0_default_active_minus1"] + 1

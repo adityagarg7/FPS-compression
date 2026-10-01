@@ -245,6 +245,10 @@ def run(opts: Options, log: Log = print) -> Result:
             payloads, durations = gpmf_rebuild.rebuild(src, plan, out_fps, drop_imu=(opts.imu == "drop"),
                                                        drop_gps=(opts.gps == "drop"), reference=ref, log=log)
             tracks["gpmd"] = mux.OutTrack("gpmd", payloads, durations, gp.timescale, source=gp)
+        udta_gpmf = src.moov.find("udta/GPMF")
+        if udta_gpmf is not None and plan.mode == "realtime":
+            from . import gpmf_rebuild
+            udta_gpmf.data = gpmf_rebuild.patch_global_settings_fps(udta_gpmf.data, out_fps, opts.imu == "drop", log=log)
         elif gp is not None:
             notes.append("gpmd track dropped by request (a native file always has one)")
 
