@@ -85,6 +85,9 @@ Signal level, which no re-encoder can hide:
 * **Identity atoms**: MUID/GUMI (media unique ids) and the HiLight tags are kept from the source, so the output is
   linked to the original if both files are ever compared. The output's modification time is set to the recording's
   end like the camera does.
+* **HRD SEI**: Ambarella-era GoPro streams (HERO5/Fusion/Karma) carry buffering-period/picture-timing SEI in every
+  access unit; GP1 cameras (HERO6-8, MAX) write none. The tool never writes SEI; if the source has some, the report
+  flags the difference.
 * **Sidecars**: a camera writes `GL01xxxx.LRV` and `GX01xxxx.THM` next to every MP4; the tool does not create them.
 
 ## Development

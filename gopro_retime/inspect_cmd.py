@@ -70,7 +70,8 @@ def inspect(path: str, out=sys.stdout) -> None:
         f_s = round(Fraction(period, 1000) * fps)
         w(f"gpmd: {len(durs)} payloads, period {period} ms ({f_s} frames), last {durs[-1]} ms, sizes {min(s.size for s in gp.samples)}-{max(s.size for s in gp.samples)} bytes")
         for d in range(max(len(p) for p in payloads)):
-            streams = gpmf_rebuild.analyze(payloads, v.sample_count, f_s, period * 1000, fps, d)
+            covered = min(v.sample_count, round(sum(durs) * fps / 1000))
+            streams = gpmf_rebuild.analyze(payloads, v.sample_count, f_s, period * 1000, fps, d, covered_frames=covered)
             dv = payloads[0][d] if d < len(payloads[0]) else None
             name = dv.child("DVNM").data.rstrip(b"\x00").decode("latin1", "replace") if dv is not None and dv.child("DVNM") else "?"
             w(f"  device {d} {name!r}:")

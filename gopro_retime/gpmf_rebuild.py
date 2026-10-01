@@ -49,6 +49,7 @@ class Stream:
     phase_us: Optional[Fraction] = None                   # B0 for timed streams
     t0: Optional[int] = None                              # first STMP (frame-locked streams)
     name: bytes = b""
+    stmp_per_frame: Optional[Fraction] = None             # measured STMP units per video frame (frame-locked streams)
 
 
 def _strm_data_key(strm: gpmf.KLV) -> tuple[Optional[bytes], bool]:
@@ -70,9 +71,11 @@ def _stream_name(strm: gpmf.KLV) -> bytes:
 
 
 def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload: int, period_us: int,
-            fps: Fraction, device: int = 0) -> list[Stream]:
-    """Flatten and classify every stream of the source (device = index of the DEVC within each payload)."""
+            fps: Fraction, device: int = 0, covered_frames: Optional[int] = None) -> list[Stream]:
+    """Flatten and classify every stream of the source (device = index of the DEVC within each payload).
+    covered_frames: video frames spanned by the metadata track (older firmware stops the track before the video ends)."""
     devcs = [p[device] if device < len(p) else gpmf.make_nested(b"DEVC", []) for p in payloads]
+    covered = covered_frames if covered_frames is not None else src_frames
     # streams identified by (data key, STNM) in order of first appearance
     streams: list[Stream] = []
     by_id: dict[tuple, Stream] = {}
@@ -116,29 +119,44 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
             if st.index not in seen:
                 st.counts.append(0); st.stmps.append(None)
     n_pay = len(payloads)
+    # STMP units per frame, measured on the per-frame candidates (firmware clocks differ: true µs, or 1e6 per payload)
+    full_idx = list(range(1, n_pay - 1)) if n_pay > 2 else []
+    frame_deltas: list[Fraction] = []
+    for st in streams:
+        total = sum(st.counts)
+        full = [st.counts[i] for i in full_idx] if full_idx else st.counts[:1]
+        median = sorted(full)[len(full) // 2] if full else 0
+        if st.key and total and abs(total - covered) <= 2 and abs(median - frames_per_payload) <= 1 and st.has_stmp:
+            for i in full_idx:
+                a, b = st.stmps[i], st.stmps[i + 1] if i + 1 < n_pay else None
+                if a is not None and b is not None and st.counts[i]:
+                    frame_deltas.append(Fraction(b - a, frames_per_payload))
+    step = sorted(frame_deltas)[len(frame_deltas) // 2] if frame_deltas else Fraction(period_us, frames_per_payload)
     for st in streams:
         total = sum(st.counts)
         if st.key is None or total == 0:
             st.cls = "empty"
             continue
-        full = st.counts[1:-1] if n_pay > 2 else st.counts[:1]
+        full = [st.counts[i] for i in full_idx] if full_idx else st.counts[:1]
         median = sorted(full)[len(full) // 2] if full else st.counts[0]
-        frame_locked = _stmp_frame_locked(st, Fraction(period_us, frames_per_payload))
-        if frame_locked and abs(total - src_frames) <= 2 and abs(median - frames_per_payload) <= 1:
+        aligned = _stmp_frame_aligned(st, step, frames_per_payload)
+        st.stmp_per_frame = step
+        if aligned and abs(total - covered) <= 2 and abs(median - frames_per_payload) <= 1:
             st.cls, st.stride = "per_frame", 1
         else:
             st.cls = "timed"
-            if frame_locked:
+            if aligned:
                 for k in range(2, 9):
                     exp = frames_per_payload / k
-                    if abs(median - exp) < 1 and abs(total - src_frames / k) <= 2:
+                    if abs(median - exp) < 1 and abs(total - covered / k) <= 2:
                         st.cls, st.stride = "stride", k
                         break
         if st.cls in ("per_frame", "stride"):
             first = st.counts[0]
             lag = frames_per_payload - st.stride * first
             st.lag_src_frames = lag if 0 <= lag < frames_per_payload else 0
-            st.extra_tail = total - (src_frames // st.stride if st.stride > 1 else src_frames)
+            # +1/-1 policies are measured against the frames the metadata covers (the output covers its own span)
+            st.extra_tail = total - (covered // st.stride if st.stride > 1 else covered)
             st.t0 = st.stmps[0]
         else:
             _reconstruct_times(st, period_us)
@@ -158,15 +176,20 @@ def _window_relative_times(st: Stream, src_durs_ms: list[int]) -> list[Fraction]
     return out
 
 
-def _stmp_frame_locked(st: Stream, frame_us: Fraction, tol_us: int = 50) -> bool:
-    """True when consecutive payload STMPs differ by (almost exactly) whole video frames — or when there is no STMP."""
-    vals = [v for v in st.stmps if v is not None]
-    if len(vals) < 2:
+def _stmp_frame_aligned(st: Stream, step: Fraction, frames_per_payload: int, tol_us: int = 50) -> bool:
+    """True when every payload STMP sits on the stream's frame grid (T0 + n*step, n close to a payload boundary) — or
+    when the stream carries no STMP. Audio-clock streams (10 Hz on a 1 s clock) fail this by ~1 ms per payload."""
+    vals = [(i, v) for i, v in enumerate(st.stmps) if v is not None]
+    if len(vals) < 2 or step <= 0:
         return True
-    for a, b in zip(vals, vals[1:]):
-        d = Fraction(b - a)
-        k = round(d / frame_us)
-        if k <= 0 or abs(d - k * frame_us) > tol_us:
+    t0 = vals[0][1]
+    for i, v in vals[1:]:
+        n = (v - t0) / step
+        k = round(n)
+        if k <= 0 or abs((v - t0) - k * step) > tol_us:
+            return False
+        # the first sample of payload i must belong to a frame near the payload's first frame (delivery lag < 1 payload)
+        if abs(k - i * frames_per_payload) > frames_per_payload:
             return False
     return True
 
@@ -233,6 +256,14 @@ def _output_durations(src: SourceFile, n_out: int, out_fps: Fraction) -> tuple[l
     src_durs = [s.duration for s in gp.samples]
     src_period = max(set(src_durs), key=src_durs.count)
     partial_last = src_durs[-1] != src_period
+    audio = src.track("audio")
+    if partial_last and audio is not None and audio.media_duration * 1000 // audio.timescale == sum(src_durs):
+        # newer firmware: the MET track ends with the audio (audio is copied verbatim, so the total is unchanged)
+        total = sum(src_durs)
+        n_pay = (total + period_ms - 1) // period_ms
+        durs = [period_ms] * n_pay
+        durs[-1] = total - period_ms * (n_pay - 1)
+        return durs, fpp
     if partial_last:
         n_src = src.video.sample_count
         frame_ms_s = Fraction(src_period) / round(src_period * src.video_frame_rate() / 1000)
@@ -276,7 +307,8 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
                     src_durs: list[int], src_period_ms: int, src_period_us: int, f_s: int, durs: list[int], f_o: int,
                     drop_imu: bool, drop_gps: bool, log) -> list[bytes]:
     fps_s, fps_o = plan.src_fps, plan.out_fps
-    streams = analyze(payloads, plan.src_frames, f_s, src_period_us, fps_s, device)
+    covered = min(plan.src_frames, round(sum(src_durs) * fps_s / 1000))
+    streams = analyze(payloads, plan.src_frames, f_s, src_period_us, fps_s, device, covered_frames=covered)
     period_o_ms = durs[0]
     period_o_us = period_o_ms * 1000
     frame_us_o = Fraction(period_o_us, f_o)
@@ -315,9 +347,12 @@ def _rebuild_device(src: SourceFile, plan: FramePlan, out_fps: Fraction, payload
                 if first_frame[j] is None:
                     first_frame[j] = out_frame
             if st.has_stmp and st.t0 is not None:
+                # STMP step per output frame in the firmware's own units: (units per source ms) * output window / frames
+                units_per_ms = (st.stmp_per_frame * f_s / src_period_ms) if st.stmp_per_frame else Fraction(1000)
+                step_o = units_per_ms * period_o_ms / f_o
                 for j in range(n_pay):
                     ff = first_frame[j]
-                    stmps[j] = st.t0 + int(ff * frame_us_o) if ff is not None else st.t0 + int(j * period_o_us)
+                    stmps[j] = st.t0 + int(ff * step_o) if ff is not None else st.t0 + int(j * units_per_ms * period_o_ms)
         elif st.cls == "timed":
             taus = _window_relative_times(st, src_durs)
             bounds = []
