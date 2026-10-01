@@ -131,6 +131,9 @@ def _fix_hevc(st: EncoderSettings, k: str, a, b, adjusted: list[str]) -> bool:
     elif k == "cu_qp_delta_enabled_flag":
         if b == 0:
             p["aq-mode"] = "0"; p["cutree"] = "0"; p["rc-grain"] = "0"
+            for key in ("vbv-maxrate", "vbv-bufsize", "hrd"):
+                p.pop(key, None)
+            st.maxrate = 0; st.bufsize = 0
         else:
             p.setdefault("aq-mode", "1")
     elif k == "diff_cu_qp_delta_depth":

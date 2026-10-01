@@ -180,7 +180,12 @@ def transplant_h264(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
     new_aus: list[AccessUnit] = []
     idr_count = 0
     last_idr_poc_base = 0
+    prev_ref_frame_num = 0
     for info, slices in pics:
+        # frame_num renumbered under the target width: 0 at IDR, PrevRefFrameNum + 1 otherwise (7.4.3)
+        fn_new = 0 if info["idr"] else (prev_ref_frame_num + 1) % t_max_frame_num
+        if info["is_ref"]:
+            prev_ref_frame_num = fn_new
         if info["idr"]:
             last_idr_poc_base = info["poc"]
             idr_pic_id = {"increment": idr_count % 65536, "alternate": idr_count % 2, "zero": 0}[conv.idr_pic_id_pattern]
@@ -196,10 +201,9 @@ def transplant_h264(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
             new_nals.append(n)  # AUD, end-of-seq etc.
         for n, f, data, hb in slices:
             g = dict(f)
-            # frame_num: re-expressed with the target width (values stay congruent -> still legal)
-            g["frame_num"] = f["frame_num"] % t_max_frame_num
-            if f["frame_num"] >= t_max_frame_num:
-                changed.add("frame_num width")
+            if fn_new != f["frame_num"]:
+                changed.add("frame_num")
+            g["frame_num"] = fn_new
             # POC
             if ts["pic_order_cnt_type"] == 0:
                 g["pic_order_cnt_lsb"] = (conv.poc_lsb_at_idr if info["idr"] else rel_poc) % t_max_poc_lsb
@@ -256,6 +260,11 @@ def transplant_h264(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
                 if want and want != g["nal_ref_idc"]:
                     g["nal_ref_idc"] = want
                     changed.add("nal_ref_idc")
+            if ep["entropy_coding_mode_flag"]:
+                stripped = _strip_cabac_zero_words(data)
+                if len(stripped) != len(data):
+                    changed.add("cabac_zero_words stripped")
+                data = stripped
             new_nals.append(h264.write_slice_nal(g, data, hb, ts, tp))
         new_aus.append(AccessUnit(new_nals, "h264"))
     # target parameter sets with the camera's nal_ref_idc
@@ -264,6 +273,14 @@ def transplant_h264(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
     if log:
         log(f"h264 transplant: rewrote {sorted(changed)}")
     return TransplantResult(new_aus, {"sps": [tsps], "pps": [tpps]}, sorted(changed), [], True)
+
+
+def _strip_cabac_zero_words(data: bytes) -> bytes:
+    """Remove trailing cabac_zero_words (0x0000 pairs after rbsp_slice_trailing_bits); cameras never write them."""
+    end = len(data)
+    while end >= 3 and data[end - 2:end] == b"\x00\x00":
+        end -= 2
+    return data[:end]
 
 
 def _set_ref_idc(n: bytes, idc: int) -> bytes:

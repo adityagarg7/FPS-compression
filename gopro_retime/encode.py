@@ -70,8 +70,10 @@ def build_ffmpeg_command(src_path: str, plan: FramePlan, st: EncoderSettings, ou
     if st.chroma_location:
         cmd += ["-chroma_sample_location", st.chroma_location]
     cmd += ["-g", str(st.gop), "-keyint_min", str(st.gop), "-sc_threshold", "0", "-bf", str(st.bframes),
-            "-refs", str(st.refs), "-b:v", str(st.bitrate), "-maxrate", str(st.maxrate), "-bufsize", str(st.bufsize),
-            "-preset", st.preset]
+            "-refs", str(st.refs), "-b:v", str(st.bitrate)]
+    if st.maxrate and st.bufsize:
+        cmd += ["-maxrate", str(st.maxrate), "-bufsize", str(st.bufsize)]
+    cmd += ["-preset", st.preset]
     if st.threads:
         cmd += ["-threads", str(st.threads)]
     if st.codec == "h264":
