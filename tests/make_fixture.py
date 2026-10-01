@@ -39,12 +39,13 @@ def make_50fps_fixture(src_path: str, out_path: str, fps: int = 50) -> str:
     new_tc = int(old_tc / float(src.video_frame_rate()) * fps)
     tracks["tmcd"] = mux.OutTrack("tmcd", [new_tc.to_bytes(4, "big")], [nframes * fdur], ts, stsd_entries=t_entries, source=t)
     m = src.track("gpmd")
-    m_samples = src.read_samples(m)
-    n_pay = int(vid_secs) + (1 if vid_secs % 1 else 0)
-    m_samples = m_samples[:n_pay]
-    durs = [1000] * len(m_samples)
-    rem = int(round((vid_secs - (len(m_samples) - 1)) * 1000))
-    durs[-1] = rem
+    # metadata payloads re-binned onto the 50 fps / 1000 ms grid so per-frame streams carry 50 samples per payload
+    from gopro_retime import gpmf_rebuild, plan as P
+    from fractions import Fraction as Fr
+    pl = P.make_plan(src.video_frame_rate(), Fr(fps), nframes, "realtime")
+    pl.frame_map = [min(nframes - 1, round(i * float(src.video_frame_rate()) / fps)) for i in range(nframes)]
+    pl.out_frames = nframes
+    m_samples, durs = gpmf_rebuild.rebuild(src, pl, Fr(fps), False, False, log=lambda s_: None)
     tracks["gpmd"] = mux.OutTrack("gpmd", m_samples, durs, 1000, source=m)
     # HD8-style writer behaviour: MET payload k written ~117 ms after its window ends, final partial payload after the last audio frame
     from gopro_retime import interleave

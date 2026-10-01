@@ -33,7 +33,7 @@ VARIANTS: dict[str, tuple[list[str], str]] = {
                            ":ctu=32:min-cu-size=16:max-tu-size=16:tu-intra-depth=2:tu-inter-depth=2"),
     "slices3": ([], "slices=3:wpp=1"),
     "slices2_wpp": ([], "slices=2:wpp=1"),
-    "weighted": ([], "weightp=1:weightb=1:bframes=2"),
+    "weighted": (["-vf", "fade=t=in:st=0:d=1,fade=t=out:st=1:d=1"], "weightp=1:weightb=1:bframes=2"),  # fades -> real weights
     "main10": (["-pix_fmt", "yuv420p10le", "-profile:v", "main10"], ""),
     "main422_10": (["-pix_fmt", "yuv422p10le", "-profile:v", "main422-10"], ""),
     "scaling_default": ([], "scaling-list=default"),
@@ -162,7 +162,7 @@ def test_hrd_aud_repeat_headers(streams):
     assert all(any(N.hevc_nal_type(n) == N.HEVC_VPS for n in au.nals) for au in idr_aus)
     sps_f = _first(st["sps"])
     hrd = sps_f["vui"]["hrd"]
-    assert hrd["nal_hrd_parameters_present_flag"] == 1 and hrd["sub_layers"][0]["nal"]["cpb"][0]["cbr_flag"] in (0, 1)
+    assert hrd["nal_hrd_parameters_present_flag"] == 1 and hrd["sub_layers"][0]["fixed_pic_rate_general_flag"] == 1
     assert all(s["slice_type"] in (hevc.SLICE_P, hevc.SLICE_I) for s in st["slices"])
     assert any(s.get("pred_weight_l0") for s in st["slices"])  # x265 weightp default
 
@@ -209,7 +209,8 @@ def test_weighted_prediction(streams):
     assert pps_f["weighted_pred_flag"] == 1 and pps_f["weighted_bipred_flag"] == 1
     l1 = [s for s in st["slices"] if s.get("pred_weight_l1")]
     assert l1 and all(len(s["pred_weight_l1"]) == s["_num_ref_idx_l1_active"] for s in l1)
-    assert any(e["luma_weight_flag"] for s in l1 for e in s["pred_weight_l0"] + s["pred_weight_l1"])
+    entries = [e for s in l1 for e in s["pred_weight_l0"] + s["pred_weight_l1"]]
+    assert any(e["luma_weight_flag"] for e in entries) and any(e["chroma_weight_flag"] for e in entries)
 
 
 @pytest.mark.parametrize("name,chroma,depth,profile", [("main10", 1, 2, 2), ("main422_10", 2, 2, 4)])
@@ -398,7 +399,7 @@ def _roundtrip_slice(sl: dict, sps_f: dict, pps_f: dict) -> dict:
     data = b"\x00\x00\x01\x00\x00\x03\x00\x00\x00\x02\xff" * 3   # exercises emulation prevention
     nal = hevc.write_slice_nal(sl, data, 0, sps_f, pps_f)
     f, out_data, hb = hevc.parse_slice_nal(nal, sps_f, pps_f)
-    assert out_data == data and hb % 8 == 0 and hb == len(nal) * 8 - len(N.insert_epb(data)) * 8 - 16 or b"\x03" in nal
+    assert out_data == data and hb % 8 == 0
     assert hevc.write_slice_nal(f, out_data, hb, sps_f, pps_f) == nal
     assert hevc.slice_pps_id(nal) == sl["slice_pic_parameter_set_id"]
     _assert_subdict(sl, f)

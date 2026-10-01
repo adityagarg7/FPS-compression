@@ -267,7 +267,8 @@ def run(opts: Options, log: Log = print) -> Result:
             m_out = ff.decode_md5(opts.out)
             m_ref = ff.decode_md5(es_path if not applied else os.path.join(workdir, "video.rewritten" + settings.es_suffix))
             ok = (m_out == m_ref)
-            rep = verify.full_report(opts.src, opts.out, codec, opts.reference, external_tools=opts.external_tools)
+            rep = verify.full_report(opts.src, opts.out, codec, opts.reference, external_tools=opts.external_tools,
+                                     imu_dropped=(opts.imu == "drop" and opts.gpmf != "drop"), gps_dropped=(opts.gps == "drop"))
             rep.add("output video decodes identically to the encoder's elementary stream", "PASS" if ok else "FAIL", f"{m_ref} vs {m_out}")
             report_text = rep.render()
             log(report_text)

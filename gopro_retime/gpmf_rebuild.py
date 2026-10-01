@@ -76,8 +76,9 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
     # streams identified by (data key, STNM) in order of first appearance
     streams: list[Stream] = []
     by_id: dict[tuple, Stream] = {}
-    for pi, devc in enumerate(devcs):
-        for si, strm in enumerate(devc.children_of("STRM")):
+    # pass 1: stream identities and whether the stream is grouped in ANY payload
+    for devc in devcs:
+        for strm in devc.children_of("STRM"):
             key, grouped = _strm_data_key(strm)
             ident = (key, _stream_name(strm))
             st = by_id.get(ident)
@@ -85,13 +86,23 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
                 st = Stream(len(streams), key, grouped, name=_stream_name(strm))
                 by_id[ident] = st
                 streams.append(st)
+            st.grouped = st.grouped or grouped
+    # pass 2: samples per payload
+    for pi, devc in enumerate(devcs):
+        seen: set[int] = set()
+        for strm in devc.children_of("STRM"):
+            key, _g = _strm_data_key(strm)
+            st = by_id[(key, _stream_name(strm))]
+            if st.index in seen:
+                continue
+            seen.add(st.index)
             stmp = strm.child("STMP")
             st.stmps.append(int.from_bytes(stmp.data[:8], "big") if stmp is not None else None)
             st.has_stmp |= stmp is not None
             cnt = 0
             if key is not None:
                 items = [c for c in strm.children or [] if c.key == key]
-                if grouped:
+                if st.grouped:
                     for it in items:
                         st.samples.append(Sample(None, it.size, it.repeat, it.data, it))
                         cnt += 1
@@ -101,11 +112,11 @@ def analyze(payloads: list[list[gpmf.KLV]], src_frames: int, frames_per_payload:
                             st.samples.append(Sample(None, it.size, 1, it.data[k * it.size:(k + 1) * it.size]))
                         cnt += it.repeat
             st.counts.append(cnt)
+        for st in streams:
+            if st.index not in seen:
+                st.counts.append(0); st.stmps.append(None)
     n_pay = len(payloads)
     for st in streams:
-        # pad counts for payloads where the stream was absent
-        while len(st.counts) < n_pay:
-            st.counts.append(0); st.stmps.append(None)
         total = sum(st.counts)
         if st.key is None or total == 0:
             st.cls = "empty"

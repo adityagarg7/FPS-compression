@@ -377,7 +377,11 @@ def compare_mediainfo(src_path: str, out_path: str, rep: Report) -> None:
 _ET_IGNORE = re.compile(r"^(File|System|ExifTool):|Duration|FileSize|FileName|Directory|FileModifyDate|FileAccessDate|FileInodeChangeDate|MediaDataSize|FrameRate|FrameCount|VideoFrameRate|AvgBitrate|MaxBitrate|TimeCode|StartTimecode|TrackDuration|MediaDuration|PlaybackFrameRate|SampleDuration|SampleTime|TimeStamp|GPS|Accelerometer|Gyroscope|Exposure|ISOSpeeds|ColorTemperatures|WhiteBalanceRGB|LumaAverage|InputUniformity|SceneClassification|PrediminantHue|CameraTemperature|ImageOrientation|CameraOrientation|GravityVector|MicrophoneWet|WindProcessing|AudioLevel|ShutterSpeeds|AverageBitrate")
 
 
-def compare_exiftool(src_path: str, out_path: str, rep: Report) -> None:
+IMU_TAGS = re.compile(r"(Accelerometer|Gyroscope|Magnetometer|InputOrientation|OutputOrientation|CameraTemperature|CameraOrientation|ImageOrientation|GravityVector|AccelerometerMatrix|GyroscopeMatrix|MagnetometerMatrix|AccelerometerUnit|GyroscopeUnit|AccelerometerScale|GyroscopeScale)")
+GPS_TAGS = re.compile(r"(GPS)")
+
+
+def compare_exiftool(src_path: str, out_path: str, rep: Report, ignore: Optional[re.Pattern] = None) -> None:
     if shutil.which("exiftool") is None:
         rep.add("exiftool available", "INFO", "exiftool not installed; skipped")
         return
@@ -388,7 +392,7 @@ def compare_exiftool(src_path: str, out_path: str, rep: Report) -> None:
             if not m:
                 continue
             key = f"{m.group(1)}:{m.group(2)}"
-            if _ET_IGNORE.search(key):
+            if _ET_IGNORE.search(key) or (ignore is not None and ignore.search(key)):
                 continue
             if key in d:
                 i = 2
@@ -404,7 +408,7 @@ def compare_exiftool(src_path: str, out_path: str, rep: Report) -> None:
 
 
 def full_report(src_path: str, out_path: str, codec: str, reference_path: Optional[str] = None,
-                external_tools: bool = True) -> Report:
+                external_tools: bool = True, imu_dropped: bool = False, gps_dropped: bool = False) -> Report:
     rep = Report()
     src, out = SourceFile.open(src_path), SourceFile.open(out_path)
     compare_container(src, out, rep)
@@ -413,7 +417,11 @@ def full_report(src_path: str, out_path: str, codec: str, reference_path: Option
     if external_tools:
         compare_ffprobe(src_path, out_path, rep)
         compare_mediainfo(src_path, out_path, rep)
-        compare_exiftool(src_path, out_path, rep)
+        pats = [p for p, on in ((IMU_TAGS, imu_dropped), (GPS_TAGS, gps_dropped)) if on]
+        ignore = re.compile("|".join(p.pattern for p in pats)) if pats else None
+        compare_exiftool(src_path, out_path, rep, ignore)
+        if imu_dropped:
+            rep.add("metadata: IMU streams removed by request (a native file carries ACCL/GYRO/CORI/IORI/GRAV)", "INFO")
     if reference_path:
         ref = SourceFile.open(reference_path)
         rep.add("reference: video timescale/frame duration", "PASS" if (ref.video.timescale, ref.video_frame_duration()) == (out.video.timescale, out.video_frame_duration()) else "FAIL",
