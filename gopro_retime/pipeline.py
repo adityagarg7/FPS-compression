@@ -285,7 +285,10 @@ def _measure_slice_conventions(codec: str, samples: list[bytes], ps: dict[str, l
         sps_f = h264.parse_sps_nal(ps["sps"][0])
         pps_f = h264.parse_pps_nal(ps["pps"][0], sps_f)
         return rewrite.measure_h264_conventions(samples, sps_f, pps_f)
-    return None
+    from .h26x import hevc, hevc_rewrite
+    sps_f = hevc.parse_sps_nal(ps["sps"][0])
+    pps_f = hevc.parse_pps_nal(ps["pps"][0], sps_f)
+    return hevc_rewrite.measure_hevc_conventions(samples, sps_f, pps_f)
 
 
 def _collect_param_sets(aus: list[N.AccessUnit], codec: str) -> dict[str, list[bytes]]:

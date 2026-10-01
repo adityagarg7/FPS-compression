@@ -323,7 +323,7 @@ def _run_text(cmd: list[str]) -> str:
         return f"<error {e}>"
 
 
-_FP_IGNORE = {"duration", "bit_rate", "nb_frames", "size", "filename", "start_time", "DURATION", "nb_read_frames",
+_FP_IGNORE = {"duration", "bit_rate", "nb_frames", "size", "filename", "start_time", "DURATION", "nb_read_frames", "extradata_size",
               "r_frame_rate", "avg_frame_rate", "time_base", "max_bit_rate", "duration_ts", "start_pts"}
 
 

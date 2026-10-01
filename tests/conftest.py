@@ -33,3 +33,10 @@ def fake50(tmp_path_factory, hero8):
     from tests.make_fixture import make_50fps_fixture
     out = tmp_path_factory.mktemp("fixtures") / "fake50.mp4"
     return make_50fps_fixture(hero8, str(out))
+
+
+@pytest.fixture(scope="session")
+def fake50_hevc(tmp_path_factory, hero8):
+    from tests.make_hevc_fixture import make
+    out = tmp_path_factory.mktemp("fixtures") / "fake50_hevc.mp4"
+    return make(hero8, str(out))

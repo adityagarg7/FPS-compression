@@ -32,3 +32,23 @@ def test_end_to_end_fake50_to_2997(fake50, tmp_path):
     for smp in o.read_samples(o.video)[:30]:
         types = [N.h264_nal_type(n) for n in N.split_length_prefixed(smp)]
         assert types in ([9, 5], [9, 1]), types
+
+
+@pytest.mark.slow
+def test_end_to_end_hevc_fake50_to_2997(fake50_hevc, tmp_path):
+    out = tmp_path / "out.mp4"
+    res = run(Options(src=fake50_hevc, out=str(out), fps="29.97", preset="veryfast", verify=True, external_tools=False), log=lambda s: None)
+    assert res.transplant_applied, res.notes
+    assert res.lossless_verified
+    o = SourceFile.open(str(out))
+    assert o.video.format == b"hvc1" and o.video.sample_count == res.plan.out_frames
+    assert o.video.handler_name == "GoPro H.265"
+    rep = verify.Report()
+    verify.compare_parameter_sets(fake50_hevc, str(out), rep)
+    assert not [c for c in rep.checks if c.status == "FAIL"], rep.render()
+    for smp in o.read_samples(o.video)[:30]:
+        types = [N.hevc_nal_type(n) for n in N.split_length_prefixed(smp)]
+        assert types[0] == N.HEVC_AUD and all(t <= 31 for t in types[1:]), types
+    # SOS sample #1 carries VPS/SPS/PPS in the source's 256-byte blocks
+    s1 = o.read_sample(o.track("fdsc").samples[1])
+    assert len(s1) == 16 + 3 * 260

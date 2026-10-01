@@ -19,6 +19,7 @@ def hevc_stream_facts(samples: list[bytes], sps_f: dict, pps_f: dict, max_sample
     sao_used = False
     tmvp = None
     cabac_init = False
+    max_refs = 0
     for smp in samples[:max_samples]:
         cnt = 0
         for n in N.split_length_prefixed(smp):
@@ -28,6 +29,7 @@ def hevc_stream_facts(samples: list[bytes], sps_f: dict, pps_f: dict, max_sample
             if f.get("dependent_slice_segment_flag"):
                 continue
             cnt += 1
+            max_refs = max(max_refs, f.get("_num_ref_idx_l0_active", 0), f.get("_num_ref_idx_l1_active", 0))
             if f.get("first_slice_segment_in_pic_flag"):
                 st = f.get("slice_type", 2)
                 types.append(st)
@@ -50,17 +52,17 @@ def hevc_stream_facts(samples: list[bytes], sps_f: dict, pps_f: dict, max_sample
             run = 0
     return {"slice_types": types, "max_b_run": best, "deblock": deblock or (0, 0, 0), "sao_used": sao_used,
             "slices_per_pic": max(set(slices_per_pic), key=slices_per_pic.count) if slices_per_pic else 1,
-            "mean_qp": sum(qps) / len(qps) if qps else None, "cabac_init_used": cabac_init}
+            "mean_qp": sum(qps) / len(qps) if qps else None, "cabac_init_used": cabac_init, "max_refs": max_refs}
 
 
 def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, height: int, pix_fmt: str,
                 bitrate: int, maxrate: Optional[int], bufsize: Optional[int], gop: int, preset: str, color: dict) -> EncoderSettings:
     sps_f = P.parse_sps(ps["sps"][0], "hevc")
     pps_f = P.parse_pps(ps["pps"][0], "hevc", sps_f)
-    facts = hevc_stream_facts(samples, sps_f, pps_f) if samples else {"max_b_run": 0, "deblock": (0, 0, 0), "slices_per_pic": 1, "mean_qp": None, "sao_used": False, "cabac_init_used": False}
+    facts = hevc_stream_facts(samples, sps_f, pps_f) if samples else {"max_b_run": 0, "deblock": (0, 0, 0), "slices_per_pic": 1, "mean_qp": None, "sao_used": False, "cabac_init_used": False, "max_refs": 0}
     vui = sps_f.get("vui", {})
     notes: list[str] = []
-    ptl = sps_f.get("profile_tier_level", sps_f)
+    ptl = sps_f.get("ptl", {})
     profile_idc = ptl.get("general_profile_idc", 1)
     tier = "high" if ptl.get("general_tier_flag") else "main"
     level_idc = ptl.get("general_level_idc", 0)
@@ -76,7 +78,7 @@ def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
     max_tb = min_tb << sps_f["log2_diff_max_min_luma_transform_block_size"]
     st = EncoderSettings(
         codec="hevc", pix_fmt=pix_fmt, width=width, height=height, bitrate=bitrate, maxrate=maxrate, bufsize=bufsize,
-        gop=gop, refs=max(1, _refs_from_rps(sps_f, pps_f)), bframes=facts["max_b_run"], preset=preset,
+        gop=gop, refs=max(1, facts["max_refs"] or _refs_from_rps(sps_f, pps_f)), bframes=facts["max_b_run"], preset=preset,
         color_range="pc" if full_range else "tv",
         color_primaries=color.get("primaries", "bt709"), color_trc=color.get("trc", "bt709"), colorspace=color.get("space", "bt709"),
         chroma_location=color.get("chroma_location"), profile=HEVC_PROFILES.get(profile_idc), level=str(level_idc), tier=tier,
