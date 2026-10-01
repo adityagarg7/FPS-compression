@@ -127,7 +127,8 @@ def encode(src_path: str, plan: FramePlan, st: EncoderSettings, out_es: str, log
 def _report_encoder_warnings(p, log) -> None:
     """Encoder option problems are only warnings for ffmpeg; they must never pass silently here."""
     err = (p.stderr or b"").decode("utf-8", "replace")
-    bad = [ln for ln in err.splitlines() if "Error parsing option" in ln or "Unrecognized option" in ln or "Option not found" in ln]
+    bad = [ln for ln in err.splitlines() if "Error parsing option" in ln or "Unrecognized option" in ln
+           or "Option not found" in ln or "Invalid value for" in ln]
     if bad:
         raise ff.ToolError("encoder rejected options:\n" + "\n".join(bad[:10]))
     if log:

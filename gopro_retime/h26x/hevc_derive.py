@@ -155,7 +155,7 @@ def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
         p["vbv-bufsize"] = str(max(1, bufsize // 1000))
     p["range"] = "full" if full_range else "limited"
     if vui.get("video_signal_type_present_flag"):
-        p["videoformat"] = ["component", "pal", "ntsc", "secam", "mac", "undef"][vui.get("video_format", 5)]
+        p["videoformat"] = ["component", "pal", "ntsc", "secam", "mac", "unknown"][vui.get("video_format", 5)]
     if sps_f.get("long_term_ref_pics_present_flag"):
         notes.append("source SPS signals long-term reference pictures (syntax only; rewritten)")
     st.x265_params = p
