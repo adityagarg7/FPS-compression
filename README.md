@@ -18,7 +18,7 @@ regenerated with the camera's own conventions, which the tool measures on the so
 | timecode (`tmcd`) | sample description rewritten (timescale, frame duration, `numberOfFrames = floor(fps)` like the camera), start value recomputed from the camera's RTC fields in the SOS header |
 | audio | AAC frames copied verbatim (no re-encode) |
 | video parameter sets | the camera's own VPS/SPS/PPS are **transplanted** into the new stream (VUI timing and HRD rate patched); x264/x265 are configured so every decode-affecting tool matches, verified by a calibration encode; every slice header is re-serialised under the camera's parameter sets (POC type/width, frame_num, reference counts, QP compensation, RPS signalling, …); SEI/filler removed; AUD kept; losslessness proven by decoding both streams and comparing MD5s |
-| bit rate | the nominal GoPro Standard/High value of the target mode (table for HERO11/12), written into the SPS HRD like the camera does; GOP kept constant in seconds |
+| bit rate | the nominal GoPro Standard/High value of the target mode (table for HERO11/12), written into the SPS HRD like the camera does; GOP length taken from the reference, else the source's length in frames (no cross-rate rule is verified on native files: Ambarella cameras keep 8 frames at 29.97 and 23.976, GP1 uses 10 and 12) |
 
 Then a forensic self-check compares the output with the source (and the reference, if given) on ~90 dimensions:
 box tree, every non-table box, sample-entry bytes, handler names, interleave rule, SOS layout, parameter-set fields
@@ -62,7 +62,8 @@ report); 2 = refused (not a camera original, unusable reference, up-conversion r
 A native recording at the target frame rate from the **same camera and mode** (`--reference`) is the template for
 everything that depends on the frame rate but cannot be derived from the 50 fps file: the `SETT` bits, mode-dependent
 Global Settings keys (SROT, …), the SOS header's mode fields, GOP length, HRD bit rate, metadata write latency.
-Without it the tool uses rules verified on other GoPro files and documents every assumption in its notes.
+Without it the tool uses rules verified on other GoPro files and documents every assumption in its notes; the GOP
+length is the one assumption with no verified cross-rate rule, so pass `--reference` or `--gop` when you know it.
 
 ## What is and is not achievable
 

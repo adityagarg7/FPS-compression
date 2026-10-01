@@ -160,14 +160,18 @@ def run(opts: Options, log: Log = print) -> Result:
         hrd_target_br = (opts.maxrate or (ref_hrd[0] if ref_hrd and ref_hrd[0] else None) or (bitrate if hrd_br else None))
         hrd_target_cpb = (opts.bufsize or (ref_hrd[1] if ref_hrd and ref_hrd[1] else None)
                           or (int(hrd_target_br * hrd_cpb / hrd_br) if (hrd_br and hrd_cpb and hrd_target_br) else None))
-        # GOP: constant in seconds (reference's frames if given)
+        # GOP: the reference's (same camera, native rate) when given; otherwise the source's length IN FRAMES.
+        # No cross-rate rule is verified on native files: Ambarella-era cameras keep 8 frames at 29.97 and 23.976,
+        # GP1 uses 10 @ 29.97 and 12 @ 23.976 -- "constant in seconds" is contradicted by both generations, while the
+        # source's own length is at least a value this camera writes. --reference or --gop is the only certain choice.
         if opts.gop:
             gop_frames = opts.gop
         elif ref is not None:
             gop_frames = _src_gop(ref.video)
         else:
-            gop_frames = max(1, round(src_gop * float(out_fps / src_fps)))
-            notes.append(f"keyframe interval {gop_frames} frames = source {src_gop} frames kept constant in seconds")
+            gop_frames = src_gop
+            notes.append(f"keyframe interval {gop_frames} frames copied from the source: the camera's GOP at {float(out_fps):.4g} fps is "
+                         "not known without a native recording; pass --reference (or --gop) to be certain")
         settings = derive.derive_settings(codec, ps_src, width, height, pix_fmt,
                                           src_fps, out_fps, src_gop, bitrate, hrd_target_br or opts.maxrate or hrd_br,
                                           hrd_target_cpb or opts.bufsize or hrd_cpb, gop_frames, opts.preset, color, samples=first_samples)
