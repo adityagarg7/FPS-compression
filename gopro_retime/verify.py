@@ -467,6 +467,36 @@ def check_av_duration_relation(out: SourceFile, rep: Report) -> None:
             f"audio - video = {delta / ts * 1000:.1f} ms")
 
 
+def check_gpmf_frame_locked_streams(out: SourceFile, rep: Report) -> None:
+    """Per-frame telemetry streams must carry one sample per video frame of their payload window (like the camera)."""
+    from . import gpmf
+    gp = out.track("gpmd")
+    if gp is None or gp.sample_count < 3:
+        return
+    fps = out.video_frame_rate()
+    payloads = [gpmf.parse(b) for b in out.read_samples(gp)]
+    durs = [s.duration for s in gp.samples]
+    problems = []
+    checked = []
+    for key in (b"SHUT", b"ISOE", b"CORI", b"IORI", b"GRAV", b"MSKP", b"LSKP"):
+        counts = []
+        for pl in payloads:
+            if not pl:
+                counts.append(None); continue
+            st = next((x for x in pl[0].children_of("STRM") if x.children and x.children[-1].key == key), None)
+            counts.append(st.children[-1].repeat if st is not None else None)
+        if all(c is None for c in counts):
+            continue
+        checked.append(key.decode())
+        for j in range(1, len(counts) - 1):
+            exp = round(durs[j] / 1000 * float(fps))
+            if counts[j] is not None and abs(counts[j] - exp) > 1:
+                problems.append(f"{key.decode()} payload {j}: {counts[j]} samples for a {durs[j]} ms window ({exp} frames)")
+    if checked:
+        rep.add("gpmf: per-frame streams carry one sample per video frame per payload", "PASS" if not problems else "FAIL",
+                "; ".join(problems[:6]) if problems else f"checked {checked}")
+
+
 def full_report(src_path: str, out_path: str, codec: str, reference_path: Optional[str] = None,
                 external_tools: bool = True, imu_dropped: bool = False, gps_dropped: bool = False) -> Report:
     rep = Report()
@@ -474,6 +504,7 @@ def full_report(src_path: str, out_path: str, codec: str, reference_path: Option
     compare_container(src, out, rep)
     check_av_duration_relation(out, rep)
     check_fingerprints(out_path, rep)
+    check_gpmf_frame_locked_streams(out, rep)
     compare_video_streams(src, out, codec, rep)
     compare_parameter_sets(src_path, out_path, rep)
     if external_tools:
