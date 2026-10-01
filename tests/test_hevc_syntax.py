@@ -522,3 +522,23 @@ def test_unsupported_extensions_raise(streams):
     sps_nal = N.insert_epb(bytes([0x42, 0x09]) + b"\x0f" * 8)   # nuh_layer_id = 1 with sps_ext_or_max_sub_layers_minus1 == 7
     with pytest.raises(BitError, match="multi-layer"):
         hevc.parse_sps_nal(sps_nal)
+
+
+def test_hevc_transplant_strips_cabac_zero_words(tmp_path):
+    """cabac_zero_words appended to x265 slices must not survive the transplant (cameras never write them, and a
+    NAL may not end in 0x00)."""
+    from gopro_retime.h26x.hevc_rewrite import transplant_hevc
+    from gopro_retime.pipeline import _collect_param_sets
+    out = tmp_path / "t.hevc"
+    subprocess.run([FFMPEG, "-y", "-v", "error", *SOURCE, "-c:v", "libx265", "-x265-params",
+                    "bframes=0:ref=1:keyint=12:info=0:log-level=error", "-f", "hevc", str(out)], check=True)
+    nals = list(N.iter_annexb_file(str(out)))
+    padded = [n + b"\x00\x00\x03\x00\x00\x03" if N.is_vcl(n, "hevc") else n for n in nals]
+    aus = list(N.group_access_units(iter(padded), "hevc"))
+    ps = _collect_param_sets(list(N.group_access_units(iter(nals), "hevc")), "hevc")
+    res = transplant_hevc(aus, ps, ps)
+    assert "cabac_zero_words stripped" in res.rewritten_fields
+    for au in res.aus:
+        for nal in au.nals:
+            if N.is_vcl(nal, "hevc"):
+                assert nal[-1] != 0 and not nal.endswith(b"\x00\x00\x03")

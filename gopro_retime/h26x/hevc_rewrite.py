@@ -6,7 +6,7 @@ from typing import Optional
 from . import hevc
 from . import nal as N
 from .nal import AccessUnit
-from .rewrite import RewriteUnsafe, SliceConventions, TransplantResult
+from .rewrite import RewriteUnsafe, SliceConventions, TransplantResult, _strip_cabac_zero_words
 
 SPS_MUST_MATCH = [
     "chroma_format_idc", "separate_colour_plane_flag", "pic_width_in_luma_samples", "pic_height_in_luma_samples",
@@ -283,6 +283,10 @@ def transplant_hevc(aus: list[AccessUnit], enc_ps: dict[str, list[bytes]], tgt_p
                 g.setdefault("slice_segment_header_extension_length", 0)
                 g.setdefault("slice_segment_header_extension_data_byte", [])
             # merge candidates / mvd / collocated: copied from the encoder slice
+            stripped = _strip_cabac_zero_words(data)
+            if len(stripped) != len(data):
+                changed.add("cabac_zero_words stripped")
+            data = stripped
             new_nals.append(hevc.write_slice_nal(g, data, hb, ts, tp))
         new_aus.append(AccessUnit(new_nals, "hevc"))
     if log:

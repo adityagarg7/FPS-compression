@@ -53,3 +53,37 @@ def test_x264_variants_roundtrip(tmp_path):
 def test_epb_roundtrip():
     for b in (b"\x00\x00\x00\x01", b"\x00\x00\x02\x00\x00\x03\x00\x00\x00", b"\x00\x00", bytes(range(256)) * 3):
         assert N.remove_epb(N.insert_epb(b)) == b
+
+
+def _ps(nals, codec="h264"):
+    from gopro_retime.pipeline import _collect_param_sets
+    return _collect_param_sets(list(N.group_access_units(iter(nals), codec)), codec)
+
+
+def test_cavlc_transplant_nal_last_byte_nonzero(tmp_path):
+    """CAVLC slice data is bit-shifted behind a longer header; the NAL must still end at the rbsp stop bit (H.264 7.4.1)."""
+    from gopro_retime.h26x.rewrite import transplant_h264
+    a = _x264(tmp_path, "cabac=0:ref=1:bframes=0:keyint=12", ["-profile:v", "main"])
+    b = _x264(tmp_path, "cabac=0:ref=16:bframes=0:keyint=12:qp=30", ["-profile:v", "main"])
+    aus = list(N.group_access_units(iter(a), "h264"))
+    res = transplant_h264(aus, _ps(a), _ps(b))
+    n = 0
+    for au in res.aus:
+        for nal in au.nals:
+            if N.is_vcl(nal, "h264"):
+                assert nal[-1] != 0, nal[-8:].hex()
+                n += 1
+    assert n > 0
+
+
+def test_h264_transplant_strips_cabac_zero_words(tmp_path):
+    from gopro_retime.h26x.rewrite import transplant_h264
+    a = _x264(tmp_path, "cabac=1:ref=1:bframes=0:keyint=12", ["-profile:v", "main"])
+    padded = [n + b"\x00\x00\x03\x00\x00\x03" if N.is_vcl(n, "h264") else n for n in a]
+    aus = list(N.group_access_units(iter(padded), "h264"))
+    res = transplant_h264(aus, _ps(a), _ps(a))
+    assert "cabac_zero_words stripped" in res.rewritten_fields
+    for au in res.aus:
+        for nal in au.nals:
+            if N.is_vcl(nal, "h264"):
+                assert nal[-1] != 0 and not nal.endswith(b"\x00\x00\x03")
