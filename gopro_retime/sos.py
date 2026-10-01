@@ -141,8 +141,9 @@ def make_builder(src: SourceFile, codec: str, ps: dict[str, list[bytes]], out_vi
 
     def build(order: list[tuple[str, int]], tracks: dict[str, OutTrack]) -> list[bytes]:
         out = [header]
-        for kind, idx in order:
-            t = tracks[kind]
+        for key, idx in order:
+            t = tracks[key]
+            kind = t.kind
             size = len(t.samples[idx])
             dur = t.durations[idx]
             if kind == "video":

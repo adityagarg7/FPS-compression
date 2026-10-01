@@ -81,7 +81,8 @@ def derive_hevc(ps: dict[str, list[bytes]], samples: list[bytes], width: int, he
         gop=gop, refs=max(1, facts["max_refs"] or _refs_from_rps(sps_f, pps_f)), bframes=facts["max_b_run"], preset=preset,
         color_range="pc" if full_range else "tv",
         color_primaries=color.get("primaries", "bt709"), color_trc=color.get("trc", "bt709"), colorspace=color.get("space", "bt709"),
-        chroma_location=color.get("chroma_location"), profile=HEVC_PROFILES.get(profile_idc), level=str(level_idc), tier=tier,
+        chroma_location=color.get("chroma_location"), profile=HEVC_PROFILES.get(profile_idc),
+        level=(f"{level_idc / 30:g}" if level_idc else None), tier=tier,
     )
     p: dict[str, str] = {}
     p["aud"] = "1"

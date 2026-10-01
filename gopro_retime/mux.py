@@ -28,6 +28,11 @@ class OutTrack:
     tkhd_duration: Optional[int] = None                   # None => derived from media duration
     elst: Optional[list[mb.ElstEntry]] = None             # None => keep/derive from the source convention
     source: Optional[Track] = None                        # the template track
+    key: str = ""                                         # unique key ('audio', 'audio2'); defaults to kind
+
+    def __post_init__(self) -> None:
+        if not self.key:
+            self.key = self.source.key if (self.source is not None and self.source.key) else self.kind
 
     @property
     def total_duration(self) -> int:
@@ -90,7 +95,7 @@ def mvhd_duration_rule(src: SourceFile) -> str:
 def write_output(src: SourceFile, out_path: str, tracks: dict[str, OutTrack], order: list[tuple[str, int]],
                  fdsc_builder: Optional[Callable[[list[tuple[str, int]], dict[str, OutTrack]], list[bytes]]] = None,
                  mvhd_timescale: Optional[int] = None, log=None) -> MuxResult:
-    """tracks: by kind ('video','audio','tmcd','gpmd'); order: media samples in mdat order (kind, index).
+    """tracks: by track key ('video','audio','audio2','tmcd','gpmd'); order: media samples in mdat order (key, index).
     fdsc_builder: given the order, returns the list of fdsc samples; fdsc sample j is written immediately before
     media sample j-2 (first two fdsc samples are headers written first) — i.e. the GoPro 'SOS' convention."""
     # ---- 1. layout ---------------------------------------------------------------------------
@@ -137,18 +142,18 @@ def write_output(src: SourceFile, out_path: str, tracks: dict[str, OutTrack], or
         tkhd = trak.child("tkhd"); assert tkhd is not None
         tid = mb.parse_tkhd(tkhd).track_id
         st = next(t for t in src.tracks if t.track_id == tid)
-        kind = st.kind
-        if kind == "fdsc" and fdsc_samples:
+        key = st.key or st.kind
+        if st.kind == "fdsc" and fdsc_samples:
             ot = OutTrack("fdsc", fdsc_samples, [0] * len(fdsc_samples), st.timescale, None, None, None,
                           media_duration=tracks["video"].total_duration if "video" in tracks else st.media_duration,
                           source=st)
             ot.timescale = tracks["video"].timescale if "video" in tracks else st.timescale
-        elif kind in tracks:
-            ot = tracks[kind]
+            key = "fdsc"
+        elif key in tracks:
+            ot = tracks[key]
         else:
-            # track kept untouched (should not happen for GoPro files; keep its tables but they'd point into the old mdat)
-            raise ValueError(f"no output data for track {tid} ({kind}); cannot keep a track without samples")
-        _patch_track(trak, st, ot, mv_ts, offsets[kind], tkhd_durs)
+            raise ValueError(f"no output data for track {tid} ({key}); cannot keep a track without samples")
+        _patch_track(trak, st, ot, mv_ts, offsets[key], tkhd_durs)
     rule = mvhd_duration_rule(src)
     if rule == "video":
         mv_dur = tkhd_durs.get("video", 0)
@@ -187,7 +192,7 @@ def _patch_track(trak: mb.Box, st: Track, ot: OutTrack, mv_ts: int, offs: list[i
         pass
     tkhd = trak.child("tkhd"); assert tkhd is not None
     mb.set_tkhd_duration(tkhd, tk_dur)
-    tkhd_durs[st.kind] = tk_dur
+    tkhd_durs[st.kind] = max(tk_dur, tkhd_durs.get(st.kind, 0))
     # edit list
     edts = trak.child("edts")
     if edts is not None:

@@ -86,7 +86,11 @@ def calibrate(st: EncoderSettings, target_ps: dict[str, list[bytes]], log=None, 
     cal = Calibration(False)
     with tempfile.TemporaryDirectory(prefix="gopro-retime-calib-") as wd:
         for _ in range(max_iter):
-            esps, epps = _probe_encode(st, wd)
+            try:
+                esps, epps = _probe_encode(st, wd)
+            except subprocess.CalledProcessError as e:
+                cal.residual = [f"calibration encode failed: {e.stderr.decode('utf-8', 'replace')[-300:].strip()}"]
+                break
             cal.encoder_sps, cal.encoder_pps = esps, epps
             diffs = _diff(esps, tsps, keys_sps) + _diff(epps, tpps, keys_pps)
             diffs = [d for d in diffs if d[0] not in _SYNTAX_ONLY]

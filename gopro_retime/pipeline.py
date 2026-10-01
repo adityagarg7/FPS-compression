@@ -87,11 +87,7 @@ def _src_gop(video: Track) -> int:
 
 
 def _hrd_from_sps(sps_nal: bytes, codec: str) -> tuple[Optional[int], Optional[int]]:
-    try:
-        f = params.parse_sps(sps_nal, codec)
-    except params.NotImplementedYet:
-        return None, None
-    return f.get("hrd_bit_rate"), f.get("hrd_cpb_size")
+    return params.hrd_values(params.parse_sps(sps_nal, codec))
 
 
 def run(opts: Options, log: Log = print) -> Result:
@@ -125,17 +121,42 @@ def run(opts: Options, log: Log = print) -> Result:
         hrd_br, hrd_cpb = _hrd_from_sps(ps_src["sps"][0], codec) if ps_src.get("sps") else (None, None)
 
         # ---- 2. encoder settings ----------------------------------------------------------------
+        from . import modes
+        ten_bit = "10" in pix_fmt
+        width, height = int(vstream["width"]), int(vstream["height"])
+        ref_hrd = None
+        if ref is not None:
+            ref_ps = N.parameter_sets_from_entry_children(ref.video.stsd_entries[0].children, codec)
+            ref_hrd = _hrd_from_sps(ref_ps["sps"][0], codec) if ref_ps.get("sps") else (None, None)
         if opts.bitrate:
             bitrate = opts.bitrate
+            notes.append(f"bitrate {bitrate} bps set on the command line")
+        elif ref_hrd and ref_hrd[0]:
+            bitrate = ref_hrd[0]
+            notes.append(f"bitrate {bitrate} bps taken from the reference recording's HRD")
         else:
-            # same bits per frame as the source scaled by frame-rate ratio ^ 0.8 (fewer frames need slightly more bits each)
-            bitrate = int(src_bitrate * float(out_fps / src_fps) ** 0.8) if plan.mode == "realtime" else src_bitrate
-            if hrd_br:
-                bitrate = min(bitrate, hrd_br)
-        gop_frames = opts.gop or (ref and _src_gop(ref.video)) or src_gop
-        settings = derive.derive_settings(codec, ps_src, int(vstream["width"]), int(vstream["height"]), pix_fmt,
-                                          src_fps, out_fps, src_gop, bitrate, opts.maxrate or hrd_br, opts.bufsize or hrd_cpb,
-                                          gop_frames, opts.preset, color, samples=first_samples)
+            nominal = modes.target_bitrate(width, height, src_fps, out_fps, hrd_br, ten_bit)
+            if nominal:
+                bitrate = nominal
+                notes.append(f"bitrate {bitrate} bps = nominal GoPro {modes.classify_setting(width, height, src_fps, hrd_br or 0, ten_bit)} bit-rate setting for {width}x{height} @ {float(out_fps):.3g}")
+            else:
+                bitrate = hrd_br or src_bitrate
+                notes.append(f"bitrate {bitrate} bps kept from the source (mode not in the nominal bit-rate table)")
+        # HRD: the camera writes the nominal rate into the SPS; CPB keeps the source's CPB/bit-rate ratio
+        hrd_target_br = (opts.maxrate or (ref_hrd[0] if ref_hrd and ref_hrd[0] else None) or (bitrate if hrd_br else None))
+        hrd_target_cpb = (opts.bufsize or (ref_hrd[1] if ref_hrd and ref_hrd[1] else None)
+                          or (int(hrd_target_br * hrd_cpb / hrd_br) if (hrd_br and hrd_cpb and hrd_target_br) else None))
+        # GOP: constant in seconds (reference's frames if given)
+        if opts.gop:
+            gop_frames = opts.gop
+        elif ref is not None:
+            gop_frames = _src_gop(ref.video)
+        else:
+            gop_frames = max(1, round(src_gop * float(out_fps / src_fps)))
+            notes.append(f"keyframe interval {gop_frames} frames = source {src_gop} frames kept constant in seconds")
+        settings = derive.derive_settings(codec, ps_src, width, height, pix_fmt,
+                                          src_fps, out_fps, src_gop, bitrate, hrd_target_br or opts.maxrate or hrd_br,
+                                          hrd_target_cpb or opts.bufsize or hrd_cpb, gop_frames, opts.preset, color, samples=first_samples)
         settings.threads = opts.threads
         for kv in opts.encoder_params:
             k, _, v = kv.partition("=")
@@ -160,7 +181,7 @@ def run(opts: Options, log: Log = print) -> Result:
         log(f"encoded {len(aus)} access units in {time.time() - t0:.1f}s")
 
         # ---- 4. parameter-set transplant + slice header rewrite ---------------------------------
-        target_ps = _patched_target_ps(ps_src, codec, out_fps)
+        target_ps = _patched_target_ps(ps_src, codec, out_fps, hrd_target_br if hrd_br else None, hrd_target_cpb if hrd_cpb else None)
         applied = False
         lossless: Optional[bool] = None
         if not opts.no_transplant:
@@ -214,13 +235,10 @@ def run(opts: Options, log: Log = print) -> Result:
                                        sync=built.sync, cts_offsets=None, stsd_entries=vid_entries, source=video)
 
         # ---- 6. audio ---------------------------------------------------------------------------
-        audio = src.track("audio")
-        if audio is not None:
-            if plan.mode == "realtime":
-                tracks["audio"] = mux.OutTrack("audio", src.read_samples(audio), [s.duration for s in audio.samples],
-                                               audio.timescale, source=audio, media_duration=audio.media_duration)
-            else:
-                raise NotImplementedError("conform mode audio stretching not implemented yet")
+        for audio in src.tracks_of("audio"):
+            # copied verbatim (same AAC frames, same esds), only re-chunked by the interleaver
+            tracks[audio.key] = mux.OutTrack("audio", src.read_samples(audio), [s.duration for s in audio.samples],
+                                             audio.timescale, source=audio, media_duration=audio.media_duration)
 
         # ---- 7. timecode ------------------------------------------------------------------------
         tmcd = src.track("tmcd")
@@ -325,19 +343,20 @@ def _with_param_sets(au: N.AccessUnit, ps: dict[str, list[bytes]], codec: str) -
     return nals
 
 
-def _patched_target_ps(ps_src: dict[str, list[bytes]], codec: str, out_fps: Fraction) -> dict[str, list[bytes]]:
-    """Source parameter sets with VUI timing rewritten for the output frame rate (H.264 counts fields: 2x)."""
+def _patched_target_ps(ps_src: dict[str, list[bytes]], codec: str, out_fps: Fraction, hrd_bitrate: Optional[int] = None,
+                       hrd_cpb: Optional[int] = None) -> dict[str, list[bytes]]:
+    """Source parameter sets with VUI timing (and HRD bit rate / CPB when given) rewritten for the output mode.
+    H.264 timing counts fields (time_scale = 2 x fps numerator)."""
     out = {k: list(v) for k, v in ps_src.items()}
-    try:
-        if codec == "h264":
-            num, ts = out_fps.denominator, out_fps.numerator * 2
-        else:
-            num, ts = out_fps.denominator, out_fps.numerator
-        out["sps"] = [params.patch_vui_timing(s, codec, num, ts) for s in out.get("sps", [])]
-        if codec == "hevc" and out.get("vps"):
-            out["vps"] = [params.patch_vui_timing(v, "hevc-vps", num, ts) for v in out["vps"]]
-    except params.NotImplementedYet:
-        pass
+    if codec == "h264":
+        num, ts = out_fps.denominator, out_fps.numerator * 2
+    else:
+        num, ts = out_fps.denominator, out_fps.numerator
+    out["sps"] = [params.patch_vui_timing(s, codec, num, ts) for s in out.get("sps", [])]
+    if hrd_bitrate and hrd_cpb:
+        out["sps"] = [params.patch_hrd(s, codec, hrd_bitrate, hrd_cpb) for s in out["sps"]]
+    if codec == "hevc" and out.get("vps"):
+        out["vps"] = [params.patch_vui_timing(v, "hevc-vps", num, ts) for v in out["vps"]]
     return out
 
 
@@ -345,17 +364,12 @@ def _video_timescale(out_fps: Fraction, ref: Optional[SourceFile]) -> tuple[int,
     """GoPro convention: 29.97 -> 90000/3003; 23.976 -> 24000/1001; integer rates -> 90000/(90000/fps)."""
     if ref is not None:
         return ref.video.timescale, ref.video_frame_duration()
-    if out_fps == Fraction(30000, 1001):
-        return 90000, 3003
-    if out_fps == Fraction(24000, 1001):
-        return 24000, 1001
-    if out_fps == Fraction(60000, 1001):
-        return 90000, 1501  # not exact (1501.5); GoPro uses 60000/1001 for 59.94 — use that instead
-    if out_fps.denominator == 1001:
-        return out_fps.numerator, 1001
-    if 90000 % out_fps.numerator == 0 and out_fps.denominator == 1:
-        return 90000, 90000 // out_fps.numerator
-    return out_fps.numerator * 1000, out_fps.denominator * 1000
+    # GoPro rule (verified 29.97/25/50 -> 90000; 23.976 -> 24000; 59.94 -> 60000): the 90 kHz clock whenever the
+    # frame duration is an integer number of 90 kHz ticks, else the nominal numerator with 1001-tick frames.
+    ticks = Fraction(90000) / out_fps
+    if ticks.denominator == 1:
+        return 90000, int(ticks)
+    return out_fps.numerator, out_fps.denominator
 
 
 def _tmcd_number_of_frames(out_fps: Fraction, ref: Optional[SourceFile]) -> int:

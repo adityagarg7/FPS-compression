@@ -79,3 +79,37 @@ def hrd_values(sps_f: dict) -> tuple[int | None, int | None]:
     br = sps_f.get("_nal_hrd_bit_rate") or sps_f.get("_vcl_hrd_bit_rate")
     cpb = sps_f.get("_nal_hrd_cpb_size") or sps_f.get("_vcl_hrd_cpb_size")
     return br, cpb
+
+
+def _hrd_value(target: int, scale: int, base_shift: int) -> int:
+    """value_minus1 such that (value+1) << (base_shift+scale) is the largest encodable value <= target (GoPro rounds down)."""
+    unit = 1 << (base_shift + scale)
+    return max(0, target // unit - 1)
+
+
+def patch_hrd(sps_nal: bytes, codec: str, bit_rate: int, cpb_size: int) -> bytes:
+    """Rewrite the (NAL and VCL) HRD bit rate / CPB size of an SPS, keeping the scale fields. No-op without HRD."""
+    if codec == "h264":
+        f = h264.parse_sps_nal(sps_nal)
+        vui = f.get("vui") or {}
+        changed = False
+        for key in ("nal_hrd", "vcl_hrd"):
+            h = vui.get(key)
+            if h:
+                h["bit_rate_value_minus1"] = [_hrd_value(bit_rate, h["bit_rate_scale"], 6)] * len(h["bit_rate_value_minus1"])
+                h["cpb_size_value_minus1"] = [_hrd_value(cpb_size, h["cpb_size_scale"], 4)] * len(h["cpb_size_value_minus1"])
+                changed = True
+        return h264.write_sps_nal(f) if changed else sps_nal
+    hevc = _hevc()
+    f = hevc.parse_sps_nal(sps_nal)
+    hrd = (f.get("vui") or {}).get("hrd")
+    if not hrd:
+        return sps_nal
+    changed = False
+    for sl in hrd.get("sub_layers", []):
+        for key in ("nal", "vcl"):
+            for cpb in (sl.get(key) or {}).get("cpb", []):
+                cpb["bit_rate_value_minus1"] = _hrd_value(bit_rate, hrd["bit_rate_scale"], 6)
+                cpb["cpb_size_value_minus1"] = _hrd_value(cpb_size, hrd["cpb_size_scale"], 4)
+                changed = True
+    return hevc.write_sps_nal(f) if changed else sps_nal

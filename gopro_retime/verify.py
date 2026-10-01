@@ -169,9 +169,9 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
         from . import interleave as _il
         from .mux import OutTrack as _OT
         conv = _il.measure(src)
-        otracks = {t.kind: _OT(t.kind, [b""] * t.sample_count, [s.duration for s in t.samples], t.timescale) for t in out.tracks if t.kind != "fdsc"}
+        otracks = {t.key: _OT(t.kind, [b""] * t.sample_count, [s.duration for s in t.samples], t.timescale, key=t.key) for t in out.tracks if t.kind != "fdsc"}
         expected = _il.order_samples(out, otracks, conv)
-        actual = [(t.kind, s.index) for t, s in out.all_samples_in_file_order() if t.kind != "fdsc"]
+        actual = [(t.key, s.index) for t, s in out.all_samples_in_file_order() if t.kind != "fdsc"]
         first = next((i for i, (a, b) in enumerate(zip(expected, actual)) if a != b), None)
         rep.add("interleave: output follows the writer rule measured on the source", "PASS" if expected == actual else "FAIL",
                 f"latency {float(conv.latency) * 1000:.1f} ms, final-after-audio={conv.final_payload_last}" + (f"; first deviation at item {first}" if first is not None else ""))
@@ -287,7 +287,12 @@ def trace_headers(path: str, max_packets: int = 3) -> dict[str, list[tuple[str, 
     return out
 
 
-def compare_parameter_sets(src_path: str, out_path: str, rep: Report, allowed: tuple[str, ...] = ("num_units_in_tick", "time_scale", "vps_num_units_in_tick", "vps_time_scale", "vui_num_units_in_tick", "vui_time_scale")) -> None:
+ALLOWED_PS_CHANGES = ("num_units_in_tick", "time_scale", "vps_num_units_in_tick", "vps_time_scale", "vui_num_units_in_tick",
+                      "vui_time_scale", "bit_rate_value_minus1[0]", "cpb_size_value_minus1[0]", "bit_rate_value_minus1",
+                      "cpb_size_value_minus1", "vps_num_ticks_poc_diff_one_minus1", "elemental_duration_in_tc_minus1")
+
+
+def compare_parameter_sets(src_path: str, out_path: str, rep: Report, allowed: tuple[str, ...] = ALLOWED_PS_CHANGES) -> None:
     ts, to = trace_headers(src_path), trace_headers(out_path)
     for sec in sorted(set(ts) | set(to)):
         if sec.startswith("Slice") or sec.startswith("Access Unit"):
@@ -300,7 +305,7 @@ def compare_parameter_sets(src_path: str, out_path: str, rep: Report, allowed: t
         diffs = [(k, da.get(k), db.get(k)) for k in dict.fromkeys(list(da) + list(db)) if da.get(k) != db.get(k)]
         bad = [d for d in diffs if d[0] not in allowed]
         detail = "; ".join(f"{k}: {x}->{y}" for k, x, y in diffs)
-        rep.add(f"paramset {sec}: fields identical (except frame-rate timing)", "PASS" if not bad else "FAIL", detail)
+        rep.add(f"paramset {sec}: fields identical (except frame-rate timing / HRD rate)", "PASS" if not bad else "FAIL", detail)
     # slice header conventions of the first pictures
     for sec in sorted(set(ts) & set(to)):
         if not sec.startswith("Slice"):

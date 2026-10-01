@@ -38,6 +38,7 @@ class Track:
     has_stss: bool
     chunk_offsets: list[int] = field(default_factory=list)
     stsc: list[tuple[int, int, int]] = field(default_factory=list)
+    key: str = ""                   # unique per file: 'audio', 'audio2', ...
 
     @property
     def format(self) -> bytes:
@@ -160,6 +161,11 @@ class SourceFile:
             raise ValueError(f"{path}: expected exactly one mdat, found {len(mdats)}")
         mvhd = mb.parse_mvhd(moov.child("mvhd"))
         tracks = [expand_track(t) for t in moov.children_of_type("trak")]
+        seen: dict[str, int] = {}
+        for t in tracks:
+            n = seen.get(t.kind, 0) + 1
+            seen[t.kind] = n
+            t.key = t.kind if n == 1 else f"{t.kind}{n}"
         return cls(path, top, ftyp, moov, mvhd, tracks, mdats[0], os.path.getsize(path))
 
     def track(self, kind: str) -> Optional[Track]:

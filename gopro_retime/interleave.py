@@ -61,11 +61,34 @@ def measure(src: SourceFile) -> InterleaveConventions:
     return InterleaveConventions(lat, lo, hi, final_last, True, start)
 
 
+class _MergedAudio:
+    """All audio tracks merged by decode time (ties: track order), presented as one duration list."""
+
+    def __init__(self, tracks: dict[str, OutTrack], keys: list[str]):
+        items = []
+        for ki, k in enumerate(keys):
+            t = tracks[k]
+            acc = 0
+            for i, d in enumerate(t.durations):
+                items.append((Fraction(acc, t.timescale), ki, k, i))
+                acc += d
+        items.sort(key=lambda x: (x[0], x[1], x[3]))
+        self.times = [x[0] for x in items]
+        self.items = [(x[2], x[3]) for x in items]
+        self.timescale = 1
+        self.durations = [0] * len(items)
+
+
+def _merged_audio(tracks: dict[str, OutTrack], keys: list[str]) -> _MergedAudio:
+    return _MergedAudio(tracks, keys)
+
+
 def order_samples(src: SourceFile, tracks: dict[str, OutTrack], conv: Optional[InterleaveConventions] = None) -> list[tuple[str, int]]:
     conv = conv or measure(src)
     out: list[tuple[str, int]] = []
     v = tracks.get("video")
-    a = tracks.get("audio")
+    audio_keys = [k for k, tr in tracks.items() if tr.kind == "audio"]
+    a = _merged_audio(tracks, audio_keys) if audio_keys else None
     t = tracks.get("tmcd")
     m = tracks.get("gpmd")
     vt = [Fraction(sum(v.durations[:i]), v.timescale) for i in range(len(v.durations))] if v else []
@@ -75,11 +98,7 @@ def order_samples(src: SourceFile, tracks: dict[str, OutTrack], conv: Optional[I
         vt = []
         for d in v.durations:
             vt.append(Fraction(acc, v.timescale)); acc += d
-    at: list[Fraction] = []
-    if a:
-        acc = 0
-        for d in a.durations:
-            at.append(Fraction(acc, a.timescale)); acc += d
+    at: list[Fraction] = list(a.times) if a else []
     # MET insertion points: before video frame index j_k
     met_before: dict[int, list[int]] = {}
     met_at_end: list[int] = []
@@ -122,7 +141,7 @@ def order_samples(src: SourceFile, tracks: dict[str, OutTrack], conv: Optional[I
                 out.append(("gpmd", k))
             out.append(("video", vi)); vi += 1
         else:
-            out.append(("audio", ai)); ai += 1
+            out.append(a.items[ai]); ai += 1
             if ai == na:
                 # HD8+/MAX firmware flushes the final (partial) payload at the stop event, right after the last audio frame
                 for k in met_at_end:
