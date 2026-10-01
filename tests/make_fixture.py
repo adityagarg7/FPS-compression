@@ -46,19 +46,17 @@ def make_50fps_fixture(src_path: str, out_path: str, fps: int = 50) -> str:
     rem = int(round((vid_secs - (len(m_samples) - 1)) * 1000))
     durs[-1] = rem
     tracks["gpmd"] = mux.OutTrack("gpmd", m_samples, durs, 1000, source=m)
-    order = mux.interleave_time_ordered(tracks)
-    fd = src.track("fdsc")
-    fd_src = src.read_samples(fd)
-
-    def fdsc_builder(order_, tracks_):
-        # placeholder: 2 header samples + one 16-byte descriptor per media sample (content not GoPro-exact)
-        out = fd_src[:2]
-        for kind, idx in order_:
-            code = {"video": 0, "audio": 4, "tmcd": 5, "gpmd": 3}[kind]
-            size = len(tracks_[kind].samples[idx])
-            dur = tracks_[kind].durations[idx]
-            out.append(b"GP" + bytes([code, 0]) + size.to_bytes(4, "big") + dur.to_bytes(4, "big") + b"\x00" * 4)
-        return out
+    # HD8-style writer behaviour: MET payload k written ~117 ms after its window ends, final partial payload after the last audio frame
+    from gopro_retime import interleave
+    from fractions import Fraction
+    hd8 = interleave.InterleaveConventions(Fraction(1168, 10000), Fraction(1001, 10000), Fraction(1335, 10000), True)
+    order = interleave.order_samples(src, tracks, hd8)
+    # regenerate the SOS track with the conventions learned from the real file (timescale patched to 50 fps)
+    from gopro_retime import sos
+    from gopro_retime.h26x import nal as N
+    ps = N.parameter_sets_from_entry_children(v.stsd_entries[0].children, "h264")
+    sos_conv = sos.learn(src, "h264", ps)
+    fdsc_builder = sos.make_builder(src, "h264", ps, ts, fdur, sos_conv)
 
     mux.write_output(src, out_path, tracks, order, fdsc_builder=fdsc_builder, mvhd_timescale=ts)
     return out_path

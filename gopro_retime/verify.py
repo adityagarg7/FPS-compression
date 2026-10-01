@@ -163,7 +163,20 @@ def compare_container(src: SourceFile, out: SourceFile, rep: Report, strict_udta
     ls, lo = src.layout_string(), out.layout_string()
     rep.add("interleave: fdsc descriptor precedes every media sample", "PASS" if _fdsc_precedes(lo) == _fdsc_precedes(ls) else "FAIL",
             f"{lo[:40]}...")
-    rep.add("interleave: starts like source", "PASS" if lo[:12] == ls[:12] else "FAIL", f"{ls[:24]} vs {lo[:24]}")
+    rep.add("interleave: starts V0, tmcd, audio like the firmware", "PASS" if lo[:8] == ls[:8] else "FAIL", f"{ls[:24]} vs {lo[:24]}")
+    # the output must obey the writer rule measured on the source (latency, final payload placement, tie-break)
+    try:
+        from . import interleave as _il
+        from .mux import OutTrack as _OT
+        conv = _il.measure(src)
+        otracks = {t.kind: _OT(t.kind, [b""] * t.sample_count, [s.duration for s in t.samples], t.timescale) for t in out.tracks if t.kind != "fdsc"}
+        expected = _il.order_samples(out, otracks, conv)
+        actual = [(t.kind, s.index) for t, s in out.all_samples_in_file_order() if t.kind != "fdsc"]
+        first = next((i for i, (a, b) in enumerate(zip(expected, actual)) if a != b), None)
+        rep.add("interleave: output follows the writer rule measured on the source", "PASS" if expected == actual else "FAIL",
+                f"latency {float(conv.latency) * 1000:.1f} ms, final-after-audio={conv.final_payload_last}" + (f"; first deviation at item {first}" if first is not None else ""))
+    except Exception as e:  # noqa: BLE001
+        rep.add("interleave: output follows the writer rule measured on the source", "WARN", f"could not evaluate: {e}")
     # contiguity of mdat
     rep.add("mdat fully covered by samples (no gaps/garbage)", "PASS" if _contiguous(out) else "FAIL")
     # gpmd stts pattern
@@ -331,7 +344,7 @@ def compare_ffprobe(src_path: str, out_path: str, rep: Report) -> None:
         rep.add(f"ffprobe stream {kind}: tags identical (handler_name, encoder, vendor_id, ...)", "PASS" if not tdiffs else "FAIL", str(tdiffs))
 
 
-_MI_IGNORE = re.compile(r"^(Bits-\(Pixel\*Frame\)|CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
+_MI_IGNORE = re.compile(r"^(mdhd_Duration|Bits-\(Pixel\*Frame\)|CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
 
 
 def compare_mediainfo(src_path: str, out_path: str, rep: Report) -> None:

@@ -192,6 +192,19 @@ def run(opts: Options, log: Log = print) -> Result:
             final_ps = enc_ps
 
         # ---- 5. build video samples -------------------------------------------------------------
+        from . import interleave, reference, sos
+        sos_conv = sos.learn(src, codec, ps_src) if src.track("fdsc") is not None else None
+        il_conv = interleave.measure(src)
+        sos_header_override = None
+        if ref is not None:
+            ref_ps = N.parameter_sets_from_entry_children(ref.video.stsd_entries[0].children, codec)
+            if ref.track("fdsc") is not None and sos_conv is not None:
+                ref_sos = sos.learn(ref, codec, ref_ps)
+                sos_header_override = reference.merged_sos_header(sos_conv.header, ref_sos.header, video.timescale, ref.video.timescale, log)
+            il_conv = interleave.measure(ref)
+            reference.apply(src, ref, log)
+        log(f"source writer conventions: MET latency {float(il_conv.latency) * 1000:.1f} ms, final payload after last audio={il_conv.final_payload_last}, "
+            f"SOS types={sos_conv.type_codes if sos_conv else None}")
         built = build_samples(aus, conv, final_ps)
         out_ts, out_fdur = _video_timescale(out_fps, ref)
         vid_entries = mb.parse_stsd(video.stbl.child("stsd"))
@@ -218,6 +231,10 @@ def run(opts: Options, log: Log = print) -> Result:
             mb.set_tmcd_entry(t_entries[0], out_ts, out_fdur, n_frames_field)
             old = int.from_bytes(src.read_sample(tmcd.samples[0]), "big")
             new_val = int(Fraction(old) / src_fps * out_fps) if plan.mode == "realtime" else old
+            clk = sos_conv and sos.header_clock(sos_conv.header, video.timescale)
+            if clk and plan.mode == "realtime":
+                # the firmware derives the start timecode from its RTC (seconds since midnight + ms) at the recording rate
+                new_val = int((clk[1] + Fraction(clk[2], 1000)) * out_fps)
             tracks["tmcd"] = mux.OutTrack("tmcd", [new_val.to_bytes(4, "big")], [len(built.samples) * out_fdur], out_ts,
                                           stsd_entries=t_entries, source=tmcd)
 
@@ -232,9 +249,8 @@ def run(opts: Options, log: Log = print) -> Result:
             notes.append("gpmd track dropped by request (a native file always has one)")
 
         # ---- 9. interleave + SOS + write -------------------------------------------------------
-        from . import interleave, sos
-        order = interleave.order_samples(src, tracks)
-        fdsc_builder = sos.make_builder(src, codec, final_ps, out_fps, out_ts, out_fdur) if src.track("fdsc") else None
+        order = interleave.order_samples(src, tracks, il_conv)
+        fdsc_builder = sos.make_builder(src, codec, final_ps, out_ts, out_fdur, sos_conv, header_override=sos_header_override) if sos_conv else None
         if gp is not None and opts.gpmf == "drop":
             _drop_track(src, "gpmd")
         res = mux.write_output(src, opts.out, tracks, order, fdsc_builder=fdsc_builder, mvhd_timescale=out_ts, log=log)
