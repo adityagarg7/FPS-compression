@@ -53,7 +53,9 @@ Options: `--fps` (29.97 default, 30, 25, 24000/1001, …), `--imu drop|keep`, `-
 `--no-external-tools`, `--no-transplant`, `--keep-temp`, `--workdir`, `--threads`, `-x KEY=VALUE`.
 
 The report printed at the end lists every check as PASS/WARN/FAIL plus notes about anything that could not be
-matched (e.g. a decode-affecting tool the encoder cannot reproduce).
+matched (e.g. a decode-affecting tool the encoder cannot reproduce). Exit status: 0 = converted and every check
+passed; 1 = converted but a check failed or the camera's parameter sets could not be transplanted (details in the
+report); 2 = refused (not a camera original, unusable reference, up-conversion requested, ...).
 
 ### Use a reference recording whenever you can
 

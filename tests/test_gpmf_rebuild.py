@@ -70,3 +70,40 @@ def test_vfps_patch_keeps_length():
     d = gpmf.parse(out)[0]
     assert d.child("VFPS").values() == [30000, 1001]
     assert d.child("ORDP").data == b"N"
+
+
+def test_audio_clock_streams_stay_10hz_at_50fps(fake50):
+    """At exactly 50 fps the 10 Hz audio-clock streams coincide with every 5th frame; they must still be re-binned by time."""
+    s = SourceFile.open(fake50)
+    pl = P.make_plan(s.video_frame_rate(), P.NTSC_30, s.video.sample_count)
+    out, durs = gpmf_rebuild.rebuild(s, pl, P.NTSC_30, drop_imu=True, drop_gps=False, log=lambda m: None)
+    for b in out[:-1]:
+        devc = gpmf.parse(b)[0]
+        for st in devc.children_of("STRM"):
+            key = st.children[-1].key
+            if key in (b"WNDM", b"MWET", b"AALP"):
+                assert st.children[-1].repeat in (10, 11), (key, st.children[-1].repeat)
+
+
+def test_hero11_pal_track_classification():
+    """Real HERO11 25 fps track (1040 ms / 26-frame payloads, off-grid final payload): per-frame streams stay per-frame."""
+    import os
+    raw_path = "/tmp/claude-0/-home-user-FPS-compression/323d0a30-0e99-596b-9ec6-bf370f087cf7/scratchpad/samples/hero11_gpmd_track.raw"
+    if not os.path.exists(raw_path):
+        import pytest
+        pytest.skip("HERO11 raw track not available")
+    from fractions import Fraction
+    devcs = gpmf.parse(open(raw_path, "rb").read())
+    payloads = [[d] for d in devcs]
+    # SHUT total across the track tells how many frames the metadata covers
+    shut_total = 0
+    for d in devcs:
+        for st in d.children_of("STRM"):
+            if st.children[-1].key == b"SHUT":
+                shut_total += st.children[-1].repeat
+    streams = gpmf_rebuild.analyze(payloads, shut_total, 26, 1040000, Fraction(25), 0, covered_frames=shut_total)
+    cls = {st.key: st.cls for st in streams}
+    for k in (b"SHUT", b"ISOE", b"CORI", b"IORI", b"GRAV", b"MSKP"):
+        assert cls[k] == "per_frame", (k, cls[k])
+    for k in (b"WNDM", b"MWET", b"AALP", b"ACCL", b"GYRO", b"GPS9"):
+        assert cls[k] == "timed", (k, cls[k])
