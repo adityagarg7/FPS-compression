@@ -497,13 +497,15 @@ def test_vps_timing_and_extension_roundtrip(streams):
     f.update(vps_timing_info_present_flag=1, vps_num_units_in_tick=1001, vps_time_scale=60000,
              vps_poc_proportional_to_timing_flag=1, vps_num_ticks_poc_diff_one_minus1=0, vps_num_hrd_parameters=2,
              vps_extension_flag=1, vps_extension_data_flag=[1, 1, 0])
+    cpb = {"bit_rate_value_minus1": 10, "cpb_size_value_minus1": 20, "cpb_size_du_value_minus1": 30,
+           "bit_rate_du_value_minus1": 40, "cbr_flag": 1}
     sub = {"fixed_pic_rate_general_flag": 0, "fixed_pic_rate_within_cvs_flag": 0, "low_delay_hrd_flag": 0, "cpb_cnt_minus1": 1,
-           "vcl": {"cpb": [{"bit_rate_value_minus1": 10, "cpb_size_value_minus1": 20, "cbr_flag": 1},
-                           {"bit_rate_value_minus1": 11, "cpb_size_value_minus1": 21, "cbr_flag": 0}]}}
+           "vcl": {"cpb": [cpb, dict(cpb, cbr_flag=0)]}}
     f["hrd"] = [{"hrd_layer_set_idx": 0, "nal_hrd_parameters_present_flag": 0, "vcl_hrd_parameters_present_flag": 1,
-                 "sub_pic_hrd_params_present_flag": 0, "bit_rate_scale": 2, "cpb_size_scale": 3,
-                 "initial_cpb_removal_delay_length_minus1": 23, "au_cpb_removal_delay_length_minus1": 15,
-                 "dpb_output_delay_length_minus1": 5, "sub_layers": [sub]},
+                 "sub_pic_hrd_params_present_flag": 1, "tick_divisor_minus2": 3, "du_cpb_removal_delay_increment_length_minus1": 4,
+                 "sub_pic_cpb_params_in_pic_timing_sei_flag": 1, "dpb_output_delay_du_length_minus1": 6, "bit_rate_scale": 2,
+                 "cpb_size_scale": 3, "cpb_size_du_scale": 4, "initial_cpb_removal_delay_length_minus1": 23,
+                 "au_cpb_removal_delay_length_minus1": 15, "dpb_output_delay_length_minus1": 5, "sub_layers": [sub]},
                 {"hrd_layer_set_idx": 0, "cprms_present_flag": 0, "sub_layers": [copy.deepcopy(sub)]}]
     nal = hevc.write_vps_nal(f)
     f2 = hevc.parse_vps_nal(nal)

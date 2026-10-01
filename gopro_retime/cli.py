@@ -13,8 +13,6 @@ def main(argv=None) -> int:
     p.add_argument("src", help="source GoPro MP4 (e.g. 50 fps)")
     p.add_argument("out", help="output MP4")
     p.add_argument("--fps", default="29.97", help="output frame rate: 29.97 (GoPro NTSC '30', default), 30, 25, 24000/1001, ...")
-    p.add_argument("--mode", choices=["realtime", "conform"], default="realtime",
-                   help="realtime: keep duration, decimate frames (default); conform: keep every frame (slow motion)")
     p.add_argument("--imu", choices=["drop", "keep"], default="drop", help="drop (default) or keep IMU streams (ACCL/GYRO/GRAV/CORI/IORI) in the metadata track")
     p.add_argument("--gps", choices=["keep", "drop"], default="keep")
     p.add_argument("--gpmf", choices=["rebuild", "drop"], default="rebuild", help="rebuild (default) the GoPro MET track for the new timeline, or drop it entirely")
@@ -35,7 +33,7 @@ def main(argv=None) -> int:
                    help="extra x264/x265 parameter (repeatable), e.g. -x psy-rd=1.0 -x rc-lookahead=40")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
-    opts = Options(src=a.src, out=a.out, fps=a.fps, mode=a.mode, imu=a.imu, gps=a.gps, gpmf=a.gpmf, reference=a.reference,
+    opts = Options(src=a.src, out=a.out, fps=a.fps, imu=a.imu, gps=a.gps, gpmf=a.gpmf, reference=a.reference,
                    bitrate=a.bitrate, maxrate=a.maxrate, bufsize=a.bufsize, gop=a.gop, preset=a.preset, two_pass=a.two_pass,
                    verify=not a.no_verify, external_tools=not a.no_external_tools, keep_temp=a.keep_temp, workdir=a.workdir,
                    no_transplant=a.no_transplant, threads=a.threads, encoder_params=a.encoder_param)

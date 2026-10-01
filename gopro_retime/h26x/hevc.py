@@ -4,7 +4,7 @@ Same conventions as h264.py: one function per syntax structure serves both direc
 plain dicts, derived convenience values use underscore keys. Syntax element names follow the specification."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from .bits import BitIO, BitError, ceil_log2
 from . import nal as N
@@ -127,7 +127,6 @@ def hrd_parameters(io: BitIO, f: dict, common_inf_present: bool, max_sub_layers_
     if common_inf_present:
         io.flag(f, "nal_hrd_parameters_present_flag")
         io.flag(f, "vcl_hrd_parameters_present_flag")
-        f["sub_pic_hrd_params_present_flag"] = 0
         if f["nal_hrd_parameters_present_flag"] or f["vcl_hrd_parameters_present_flag"]:
             if io.flag(f, "sub_pic_hrd_params_present_flag"):
                 io.u(8, f, "tick_divisor_minus2")
@@ -141,6 +140,8 @@ def hrd_parameters(io: BitIO, f: dict, common_inf_present: bool, max_sub_layers_
             io.u(5, f, "initial_cpb_removal_delay_length_minus1")
             io.u(5, f, "au_cpb_removal_delay_length_minus1")
             io.u(5, f, "dpb_output_delay_length_minus1")
+        else:
+            f["sub_pic_hrd_params_present_flag"] = 0
     for s in _dict_list(io, f, "sub_layers", max_sub_layers_minus1 + 1):
         if io.flag(s, "fixed_pic_rate_general_flag"):
             s["fixed_pic_rate_within_cvs_flag"] = 1
@@ -389,10 +390,10 @@ def sps_range_extension(io: BitIO, f: dict) -> None:
 
 
 def sps_3d_extension(io: BitIO, f: dict) -> None:
-    for d in _dict_list(io, f, "sps_3d", 2):
+    for depth, d in enumerate(_dict_list(io, f, "sps_3d", 2)):
         io.flag(d, "iv_di_mc_enabled_flag")
         io.flag(d, "iv_mv_scal_enabled_flag")
-        if d is f["sps_3d"][0]:
+        if depth == 0:
             io.ue(d, "log2_ivmc_sub_pb_size_minus3")
             for k in ("iv_res_pred_enabled_flag", "depth_ref_enabled_flag", "vsp_mc_enabled_flag", "dbbp_enabled_flag"):
                 io.flag(d, k)
@@ -779,7 +780,7 @@ def _parse_param_set(nal_bytes: bytes, expected_type: int) -> tuple[BitIO, dict]
     return io, f
 
 
-def _write_nal(f: dict, default_type: int, body, tail: bytes = b"") -> bytes:
+def _write_nal(f: dict, default_type: int, body: Callable[[BitIO], None], tail: bytes = b"") -> bytes:
     f.setdefault("nal_unit_type", default_type)
     io = BitIO()
     _nal_header(io, f)
@@ -863,5 +864,6 @@ def write_slice_nal(f: dict, data: bytes, header_bits: int, sps_f: dict, pps_f: 
     """New NAL header + slice_segment_header() (incl. byte_alignment) followed by `data`, EPB re-inserted.
     `header_bits` exists for signature parity with h264.write_slice_nal (where CAVLC data needs bit-shifting); HEVC
     slice data is always byte aligned so its value is irrelevant here."""
-    body = lambda io: slice_segment_header(io, f, f["nal_unit_type"], sps_f, pps_f)  # noqa: E731
+    def body(io: BitIO) -> None:
+        slice_segment_header(io, f, f["nal_unit_type"], sps_f, pps_f)
     return _write_nal(f, f["nal_unit_type"], body, data)
