@@ -31,12 +31,14 @@ def main(argv=None) -> int:
     p.add_argument("--keep-temp", action="store_true")
     p.add_argument("--workdir")
     p.add_argument("--threads", type=int, default=0)
+    p.add_argument("-x", "--encoder-param", action="append", default=[], metavar="KEY=VALUE",
+                   help="extra x264/x265 parameter (repeatable), e.g. -x psy-rd=1.0 -x rc-lookahead=40")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
     opts = Options(src=a.src, out=a.out, fps=a.fps, mode=a.mode, imu=a.imu, gps=a.gps, gpmf=a.gpmf, reference=a.reference,
                    bitrate=a.bitrate, maxrate=a.maxrate, bufsize=a.bufsize, gop=a.gop, preset=a.preset, two_pass=a.two_pass,
                    verify=not a.no_verify, external_tools=not a.no_external_tools, keep_temp=a.keep_temp, workdir=a.workdir,
-                   no_transplant=a.no_transplant, threads=a.threads)
+                   no_transplant=a.no_transplant, threads=a.threads, encoder_params=a.encoder_param)
     log = (lambda s: None) if a.quiet else (lambda s: print(s, file=sys.stderr, flush=True))
     res = run(opts, log=log)
     for n in res.notes:

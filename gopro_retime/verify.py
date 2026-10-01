@@ -331,7 +331,7 @@ def compare_ffprobe(src_path: str, out_path: str, rep: Report) -> None:
         rep.add(f"ffprobe stream {kind}: tags identical (handler_name, encoder, vendor_id, ...)", "PASS" if not tdiffs else "FAIL", str(tdiffs))
 
 
-_MI_IGNORE = re.compile(r"^(CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
+_MI_IGNORE = re.compile(r"^(Bits-\(Pixel\*Frame\)|CompleteName|FileName|FileNameExtension|FileExtension|File_Modified_Date|File_Modified_Date_Local|FolderName|Complete name|File name|File size|Duration|Overall bit rate|Frame rate|Frame count|Stream size|Bit rate|Bits/\(Pixel\*Frame\)|FrameRate|Delay|File last modification|Proportion of this stream|DataSize|FooterSize|HeaderSize|Count|Samples count|Source duration|Source stream size|Source_StreamSize|Duration_|StreamSize|OverallBitRate|TimeCode|Time code|Format settings, GOP|Minimum frame rate|Maximum frame rate|SamplesPerFrame|Encoded date|Tagged date|Delay_|FrameCount|BitRate|FileSize|Buffer size|BufferSize|Maximum bit rate|Nominal bit rate|Original frame rate|Frame rate mode)")
 
 
 def compare_mediainfo(src_path: str, out_path: str, rep: Report) -> None:

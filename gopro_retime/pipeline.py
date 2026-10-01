@@ -44,6 +44,7 @@ class Options:
     workdir: Optional[str] = None
     no_transplant: bool = False
     threads: int = 0
+    encoder_params: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -134,9 +135,18 @@ def run(opts: Options, log: Log = print) -> Result:
         gop_frames = opts.gop or (ref and _src_gop(ref.video)) or src_gop
         settings = derive.derive_settings(codec, ps_src, int(vstream["width"]), int(vstream["height"]), pix_fmt,
                                           src_fps, out_fps, src_gop, bitrate, opts.maxrate or hrd_br, opts.bufsize or hrd_cpb,
-                                          gop_frames, opts.preset, color)
+                                          gop_frames, opts.preset, color, samples=first_samples)
         settings.threads = opts.threads
+        for kv in opts.encoder_params:
+            k, _, v = kv.partition("=")
+            (settings.x264_params if codec == "h264" else settings.x265_params)[k] = v
         notes.extend(settings.notes)
+        if not opts.no_transplant:
+            from .h26x import calibrate
+            cal = calibrate.calibrate(settings, ps_src, log=log)
+            notes.extend(f"calibration: {a}" for a in cal.adjusted)
+            if not cal.ok:
+                notes.extend(f"decode-affecting mismatch (cannot be fixed by rewriting): {r}" for r in cal.residual)
         log(f"encoder: {settings.codec} bitrate={settings.bitrate} maxrate={settings.maxrate} bufsize={settings.bufsize} gop={settings.gop} refs={settings.refs} bframes={settings.bframes}")
 
         # ---- 3. encode --------------------------------------------------------------------------
@@ -155,7 +165,8 @@ def run(opts: Options, log: Log = print) -> Result:
         lossless: Optional[bool] = None
         if not opts.no_transplant:
             try:
-                tr = rewrite.transplant(aus, codec, enc_ps, target_ps, log=log)
+                conv_slices = _measure_slice_conventions(codec, first_samples, ps_src)
+                tr = rewrite.transplant(aus, codec, enc_ps, target_ps, conv_slices, log=log)
             except rewrite.RewriteUnsafe as e:
                 tr = rewrite.TransplantResult(aus, enc_ps, [], [f"unsafe: {e}"], False)
             notes.extend(tr.residual_differences)
@@ -245,6 +256,15 @@ def run(opts: Options, log: Log = print) -> Result:
     finally:
         if not opts.keep_temp and not opts.workdir:
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _measure_slice_conventions(codec: str, samples: list[bytes], ps: dict[str, list[bytes]]):
+    if codec == "h264":
+        from .h26x import h264
+        sps_f = h264.parse_sps_nal(ps["sps"][0])
+        pps_f = h264.parse_pps_nal(ps["pps"][0], sps_f)
+        return rewrite.measure_h264_conventions(samples, sps_f, pps_f)
+    return None
 
 
 def _collect_param_sets(aus: list[N.AccessUnit], codec: str) -> dict[str, list[bytes]]:
